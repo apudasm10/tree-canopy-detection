@@ -10,7 +10,7 @@ from albumentations.pytorch import ToTensorV2
 
 
 class CocoMaskDataset(Dataset):
-    def __init__(self, img_dir, ann_file, resize=(224, 224), augment=False):
+    def __init__(self, img_dir, ann_file, resize=(224, 224), augment=True, train=True):
         self.img_dir = img_dir
         self.resize = resize
         self.augment = augment
@@ -37,13 +37,13 @@ class CocoMaskDataset(Dataset):
                 A.HorizontalFlip(p=0.5),
                 A.RandomBrightnessContrast(p=0.3),
                 A.HueSaturationValue(p=0.3),
-                A.Normalize(mean=(0,0,0), std=(1,1,1)),  # ✅ convert to float
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2()
             ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
         else:
             return A.Compose([
                 A.Resize(H, W),
-                A.Normalize(mean=(0,0,0), std=(1,1,1)),  # ✅ same here
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2()
             ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
 
@@ -82,7 +82,6 @@ class CocoMaskDataset(Dataset):
         else:
             masks = np.zeros((0, orig_h, orig_w), dtype=np.uint8)
 
-        # Apply Albumentations transform (auto-resizes all)
         transformed = self.transform(image=img, masks=list(masks), bboxes=boxes, labels=labels)
         img = transformed["image"]
         masks = torch.stack([m for m in transformed["masks"]]) if len(transformed["masks"]) > 0 else torch.zeros((0, *self.resize), dtype=torch.uint8)

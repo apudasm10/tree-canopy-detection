@@ -15,11 +15,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using:", device)
 
-# transform = transforms.Compose([
-#     transforms.Resize((224, 224)),
-#     transforms.ToTensor()
-# ])
-
 dataset = CocoMaskDataset(
     img_dir="/home/vault/iwso/iwso195h/TCD/data/train",
     ann_file="data/coco_annotations.json",
@@ -87,10 +82,9 @@ for epoch in range(num_epochs):
     avg_loss = epoch_loss / len(train_loader)
     tqdm.write(f"Epoch [{epoch+1}/{num_epochs}] - Avg Loss: {avg_loss:.4f}")
 
-    # ✅ save model after each epoch
     model_name = f"maskrcnn_epoch_{epoch+1}.pth"
     save_path = os.path.join(save_dir, model_name)
     torch.save(model.state_dict(), save_path)
-    tqdm.write(f"✅ Saved model checkpoint to: {save_path}")
+    tqdm.write(f"Saved model checkpoint to: {save_path}")
 
     torch.cuda.empty_cache()
