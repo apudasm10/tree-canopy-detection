@@ -1,5 +1,5 @@
 from torch.utils.data import DataLoader, random_split
-from torchvision import transforms
+from torchvision.models.detection.anchor_utils import AnchorGenerator
 from src.dataset import *
 from torchvision.models.detection import maskrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
@@ -7,9 +7,12 @@ from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 import torch
 from torch.optim import SGD
 from tqdm import tqdm
+import time
+from datetime import timedelta
 
 torch.cuda.empty_cache()
 
+start = time.time()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -43,18 +46,19 @@ model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
 hidden_layer = 256
 model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
-model.rpn.post_nms_top_n_train = 1024
-model.rpn.post_nms_top_n_test  = 512
-model.rpn.pre_nms_top_n_train  = 1024
-model.rpn.pre_nms_top_n_test   = 512
+model.rpn.post_nms_top_n_train = 2024
+model.rpn.post_nms_top_n_test  = 1024
+model.rpn.pre_nms_top_n_train  = 2024
+model.rpn.pre_nms_top_n_test   = 1024
 
-save_dir = "/home/vault/iwso/iwso195h/TCD/Run 1"
+save_dir = "/home/vault/iwso/iwso195h/TCD/Run 3"
 
 os.makedirs(save_dir, exist_ok=True)
 
 model.to(device)
 
-optimizer = SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=0.0005)
+optimizer = SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+lr_sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[22, 33, 44], gamma=0.2)
 
 num_epochs = 50
 for epoch in range(num_epochs):
@@ -79,6 +83,7 @@ for epoch in range(num_epochs):
         epoch_loss += losses.item()
         progress_bar.set_postfix({"batch_loss": f"{losses.item():.4f}"})
 
+    lr_sched.step()
     avg_loss = epoch_loss / len(train_loader)
     tqdm.write(f"Epoch [{epoch+1}/{num_epochs}] - Avg Loss: {avg_loss:.4f}")
 
@@ -88,3 +93,11 @@ for epoch in range(num_epochs):
     tqdm.write(f"Saved model checkpoint to: {save_path}")
 
     torch.cuda.empty_cache()
+
+
+end = time.time()
+
+diff = end - start
+formatted = str(timedelta(seconds=int(diff)))
+
+print("Time:", formatted)
