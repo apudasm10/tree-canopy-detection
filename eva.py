@@ -19,17 +19,17 @@ from torchvision.models.detection.rpn import RPNHead
 
 # ---------- config ----------
 IMG_DIR      = "/home/vault/iwso/iwso195h/TCD/data/val"
-CHECKPOINT   = "/home/vault/iwso/iwso195h/TCD/Run 10/maskrcnn_epoch_99.pth"
-CLS_CHECKPOINT    = "/home/vault/iwso/iwso195h/TCD/cls_model2/resnet50_aerial_22.pth"
-OUT_JSON     = "data/preds5.json"
+CHECKPOINT   = "/home/vault/iwso/iwso195h/TCD/Run 12/maskrcnn_epoch_90.pth"
+CLS_CHECKPOINT    = "/home/vault/iwso/iwso195h/TCD/cls_model_final2/resnet50_aerial_25.pth"
+OUT_JSON     = "data/preds8.json"
 CLASS_NAMES  = ["background", "individual_tree", "group_of_trees"]  # index matches model labels
 CLASSES = ['agriculture_plantation','rural_area','urban_area','open_field','industrial_area']
-SCORE_THR    = 0.05
+SCORE_THR    = 0.5
 DEVICE       = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ---------- helpers ----------
 def list_images(d):
-    exts = {".jpg",".jpeg",".png",".bmp",".tif",".tiff",".webp"}
+    exts = {".tif",".tiff"}
     return sorted([p for p in Path(d).rglob("*") if p.suffix.lower() in exts])
 
 def to_tensor(pil_img):
@@ -71,7 +71,13 @@ if __name__ == "__main__":
     ])
 
     anchor_generator = AnchorGenerator(
-        sizes=((16,), (32,), (64,), (128,), (256,),),  # tiny → group
+        sizes=(
+            (16, 32),    # P2: Has 2 sizes now
+            (32, 64),    # P3: Has 2 sizes
+            (64, 128),   # P4: Has 2 sizes
+            (128, 256),  # P5: Has 2 sizes
+            (256, 512)   # P6: Has 2 sizes
+        ),
         aspect_ratios=((0.5, 0.75, 1.0, 1.33, 2.0),) * 5
     )
 

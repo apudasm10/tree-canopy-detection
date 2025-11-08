@@ -10,10 +10,12 @@ import torch.optim as optim
 import torch
 from torch.utils.data import Dataset, DataLoader
 import albumentations as A
+from torch.optim.lr_scheduler import OneCycleLR
 from tqdm import tqdm
 from albumentations.pytorch import ToTensorV2
 
-with open("/home/vault/iwso/iwso195h/TCD/data/train_annotations.json", "r") as f:
+file_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/data/train_annotations.json")
+with open(file_dir, "r") as f:
     data = json.load(f)
 
 records = data["images"]
@@ -73,10 +75,10 @@ class AerialDataset(Dataset):
         label_idx = class_to_idx[row["image_class"]]
 
         # one-hot encode
-        label = torch.eye(len(CLASSES))[label_idx]
+        # label = torch.eye(len(CLASSES))[label_idx]
 
         img = self.transform(image=img)["image"]
-        return img, label
+        return img, label_idx
     
 train_ds = AerialDataset(train_df, IMG_DIR, train_transform)
 test_ds  = AerialDataset(test_df,  IMG_DIR, test_transform)
@@ -87,12 +89,19 @@ test_loader  = DataLoader(test_ds, batch_size=4, shuffle=False)
 print(train_ds[74][1])
 print(test_ds[3][1])
 
+total_epochs = 30
+
 model = models.resnet152(weights=models.ResNet152_Weights.IMAGENET1K_V2)
 model.fc = nn.Linear(model.fc.in_features, len(CLASSES))
 model = model.to(device)
 
-criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+criterion = criterion = nn.CrossEntropyLoss()
+optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+
+lr_sched = OneCycleLR(optimizer, 
+                    max_lr=1e-3,
+                    epochs=total_epochs, # Total epochs
+                    steps_per_epoch=len(train_loader)) # Batches per epoch
 
 def train_one_epoch():
     model.train()
@@ -100,18 +109,18 @@ def train_one_epoch():
     loop = tqdm(train_loader, leave=False)
     for imgs, labels in loop:
         imgs = imgs.to(device)
-        labels = labels.to(device).float()
+        labels = labels.to(device)
 
         optimizer.zero_grad()
         outputs = model(imgs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+        lr_sched.step()
 
         loss_sum += loss.item() * imgs.size(0)
         preds = outputs.softmax(1).argmax(1)
-        trues = labels.argmax(1)
-        correct += (preds == trues).sum().item()
+        correct += (preds == labels).sum().item()
         total += imgs.size(0)
 
         loop.set_description(f"Train loss: {loss.item():.4f}")
@@ -126,27 +135,32 @@ def eval_once():
     loop = tqdm(test_loader, leave=False)
     for imgs, labels in loop:
         imgs = imgs.to(device)
-        labels = labels.to(device).float()
+        labels = labels.to(device)
 
         outputs = model(imgs)
         loss = criterion(outputs, labels)
         loss_sum += loss.item() * imgs.size(0)
         preds = outputs.softmax(1).argmax(1)
-        trues = labels.argmax(1)
-        correct += (preds == trues).sum().item()
+        correct += (preds == labels).sum().item()
         total += imgs.size(0)
 
         loop.set_description(f"Test loss: {loss.item():.4f}")
 
     return loss_sum / total, correct / total
 
-save_dir = "/home/vault/iwso/iwso195h/TCD/cls_model2"
+save_dir = "/home/vault/iwso/iwso195h/TCD/cls_model_final2"
 os.makedirs(save_dir)
 # ===== Train =====
-for epoch in range(30):
+for epoch in range(total_epochs):
     tr_loss, tr_acc = train_one_epoch()
     te_loss, te_acc = eval_once()
-    print(f"Epoch {epoch+1:02d} | Train {tr_loss:.4f}/{tr_acc:.3f} | Test {te_loss:.4f}/{te_acc:.3f}")
+
+    # --- Optional: Add LR to see the scheduler work ---
+    current_lr = optimizer.param_groups[0]['lr']
+    print(f"Epoch {epoch+1:02d} | Train {tr_loss:.4f}/{tr_acc:.3f} | Test {te_loss:.4f}/{te_acc:.3f} | LR: {current_lr:.6f}")
+    # --- End of change ---
+
+    # print(f"Epoch {epoch+1:02d} | Train {tr_loss:.4f}/{tr_acc:.3f} | Test {te_loss:.4f}/{te_acc:.3f}")
     model_path = os.path.join(save_dir, f"resnet50_aerial_{epoch}.pth")
 
     torch.save(model.state_dict(), model_path)

@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from pycocotools import mask as coco_mask
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+import cv2
 
 
 class CocoMaskDataset(Dataset):
@@ -35,6 +36,7 @@ class CocoMaskDataset(Dataset):
             return A.Compose([
                 A.Resize(H, W),
                 A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
                 A.RandomRotate90(p=0.5),
                 A.RandomBrightnessContrast(p=0.3),
                 A.HueSaturationValue(p=0.3),

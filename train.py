@@ -1,14 +1,16 @@
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from torchvision.models.detection.anchor_utils import AnchorGenerator
 from src.dataset import *
-from torchvision.models.detection import maskrcnn_resnet50_fpn
+from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
 from torch.utils.data import DataLoader, Subset
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 from torchvision.models.detection.rpn import RPNHead
 from src.metrics import *
 import torch
-from torch.optim import SGD
+from torch.optim import AdamW, SGD
+from torch.amp import GradScaler, autocast  # <-- Import for mixed precision
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import time
 from datetime import timedelta
@@ -22,10 +24,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using:", device)
 
 ALL_ANNOTATIONS_FILE = "data/coco_annotations.json"
+img_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/data/train")
 
 # 1) Build a deterministic split
 full_ds_for_split = CocoMaskDataset(
-    img_dir="/home/vault/iwso/iwso195h/TCD/data/train",
+    img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
     augment=False,          # augment flag irrelevant here; we only take length
@@ -41,19 +44,19 @@ val_idx   = perm[train_size:].tolist()
 
 # 2) Create THREE datasets with different transforms
 train_ds_aug = CocoMaskDataset(
-    img_dir="/home/vault/iwso/iwso195h/TCD/data/train",
+    img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
     augment=True           # training uses augmentation
 )
 train_ds_eval = CocoMaskDataset(
-    img_dir="/home/vault/iwso/iwso195h/TCD/data/train",
+    img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
     augment=False          # training-set evaluation: NO augmentation
 )
 val_ds_eval = CocoMaskDataset(
-    img_dir="/home/vault/iwso/iwso195h/TCD/data/train",
+    img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
     augment=False          # validation/test: NO augmentation
@@ -77,11 +80,17 @@ val_metrics = CocoMetrics(annotation_file=ALL_ANNOTATIONS_FILE)
 num_classes = 3
 
 anchor_generator = AnchorGenerator(
-    sizes=((16,), (32,), (64,), (128,), (256,),),  # tiny → group
+    sizes=(
+        (16, 32),    # P2: Has 2 sizes now
+        (32, 64),    # P3: Has 2 sizes
+        (64, 128),   # P4: Has 2 sizes
+        (128, 256),  # P5: Has 2 sizes
+        (256, 512)   # P6: Has 2 sizes
+    ),
     aspect_ratios=((0.5, 0.75, 1.0, 1.33, 2.0),) * 5
 )
 
-model = maskrcnn_resnet50_fpn(weights="DEFAULT")
+model = maskrcnn_resnet50_fpn_v2(weights="DEFAULT")
 
 model.rpn.anchor_generator = anchor_generator
 num_anchors = anchor_generator.num_anchors_per_location()[0]
@@ -98,8 +107,9 @@ model.rpn.post_nms_top_n_train = 1500
 model.rpn.pre_nms_top_n_test   = 2000
 model.rpn.post_nms_top_n_test  = 1024
 
-save_dir = "/home/vault/iwso/iwso195h/TCD/Run 10"
-print("Anchors added, epoch 100")
+save_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/Run Final2")
+
+print("Modelv2, Anchors added (#10), epoch 100, AdamW")
 
 print("Running with accumulation_steps = 4")
 
@@ -107,11 +117,16 @@ os.makedirs(save_dir, exist_ok=True)
 
 model.to(device)
 
-optimizer = SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
-lr_sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[33, 66, 90], gamma=0.2)
+num_epochs = 100
 accumulation_steps = 4
 
-num_epochs = 100
+optimizer = SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+total_steps = num_epochs * (len(train_loader) // accumulation_steps)
+lr_sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[33, 66, 90], gamma=0.2)
+
+# scaler = GradScaler("cuda")
+
+
 for epoch in range(num_epochs):
     model.train()
     train_metrics.reset()
