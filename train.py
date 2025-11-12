@@ -1,16 +1,12 @@
 from torch.utils.data import DataLoader
-from torchvision.models.detection.anchor_utils import AnchorGenerator
 from src.dataset import *
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
 from torch.utils.data import DataLoader, Subset
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
-from torchvision.models.detection.rpn import RPNHead
 from src.metrics import *
 import torch
-from torch.optim import AdamW, SGD
-from torch.amp import GradScaler, autocast  # <-- Import for mixed precision
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim import SGD
 from tqdm import tqdm
 import time
 from datetime import timedelta
@@ -31,41 +27,39 @@ full_ds_for_split = CocoMaskDataset(
     img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
-    augment=False,          # augment flag irrelevant here; we only take length
+    augment=False,
 )
 N = len(full_ds_for_split)
 train_size = int(0.8 * N)
 val_size   = N - train_size
 
-g = torch.Generator().manual_seed(42)       # reproducible split
+g = torch.Generator().manual_seed(42)
 perm = torch.randperm(N, generator=g)
 train_idx = perm[:train_size].tolist()
 val_idx   = perm[train_size:].tolist()
 
-# 2) Create THREE datasets with different transforms
 train_ds_aug = CocoMaskDataset(
     img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
-    augment=True           # training uses augmentation
+    augment=True
 )
 train_ds_eval = CocoMaskDataset(
     img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
-    augment=False          # training-set evaluation: NO augmentation
+    augment=False
 )
 val_ds_eval = CocoMaskDataset(
     img_dir=img_dir,
     ann_file=ALL_ANNOTATIONS_FILE,
     resize=(1024, 1024),
-    augment=False          # validation/test: NO augmentation
+    augment=False
 )
 
-# 3) Wrap each with the same indices
-train_dataset       = Subset(train_ds_aug,  train_idx)
-train_dataset_eval  = Subset(train_ds_eval, train_idx)
-val_dataset         = Subset(val_ds_eval,   val_idx)
+train_dataset = Subset(train_ds_aug,  train_idx)
+train_dataset_eval = Subset(train_ds_eval, train_idx)
+val_dataset = Subset(val_ds_eval,   val_idx)
 
 # 4) Loaders
 train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=collate_fn)
@@ -79,22 +73,7 @@ val_metrics = CocoMetrics(annotation_file=ALL_ANNOTATIONS_FILE)
 
 num_classes = 3
 
-anchor_generator = AnchorGenerator(
-    sizes=(
-        (16, 32),    # P2: Has 2 sizes now
-        (32, 64),    # P3: Has 2 sizes
-        (64, 128),   # P4: Has 2 sizes
-        (128, 256),  # P5: Has 2 sizes
-        (256, 512)   # P6: Has 2 sizes
-    ),
-    aspect_ratios=((0.5, 0.75, 1.0, 1.33, 2.0),) * 5
-)
-
 model = maskrcnn_resnet50_fpn_v2(weights="DEFAULT")
-
-model.rpn.anchor_generator = anchor_generator
-num_anchors = anchor_generator.num_anchors_per_location()[0]
-model.rpn.head = RPNHead(model.rpn.head.conv[0][0].in_channels, num_anchors)
 
 in_features = model.roi_heads.box_predictor.cls_score.in_features
 model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
@@ -102,16 +81,13 @@ model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
 hidden_layer = 256
 model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
+
 model.rpn.pre_nms_top_n_train  = 3000
 model.rpn.post_nms_top_n_train = 1500
 model.rpn.pre_nms_top_n_test   = 2000
 model.rpn.post_nms_top_n_test  = 1024
 
-save_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/Run Final2")
-
-print("Modelv2, Anchors added (#10), epoch 100, AdamW")
-
-print("Running with accumulation_steps = 4")
+save_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/Train_MASK_RCNN_Run_1.0")
 
 os.makedirs(save_dir, exist_ok=True)
 
@@ -119,13 +95,11 @@ model.to(device)
 
 num_epochs = 100
 accumulation_steps = 4
+print("Running with accumulation_steps = 4")
 
-optimizer = SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+optimizer = SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=0.0005)
 total_steps = num_epochs * (len(train_loader) // accumulation_steps)
-lr_sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[33, 66, 90], gamma=0.2)
-
-# scaler = GradScaler("cuda")
-
+lr_sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 80], gamma=0.2)
 
 for epoch in range(num_epochs):
     model.train()
@@ -141,16 +115,11 @@ for epoch in range(num_epochs):
         # forward + loss
         loss_dict = model(imgs, targets)
         losses = sum(loss for loss in loss_dict.values())
-
-        # backward
-        # optimizer.zero_grad()
         losses.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        # optimizer.step()
         
         if (i + 1) % accumulation_steps == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            optimizer.step()  # Update parameters
+            optimizer.step()
             optimizer.zero_grad()
 
         epoch_loss += losses.item()
@@ -175,16 +144,13 @@ for epoch in range(num_epochs):
     
     if val_summary:
         print(f"--- Epoch {epoch + 1} Validation Metrics ---")
-        # Print only the 4 most important metrics
         print(f"mAP (IoU=0.50:0.95): {val_summary['mAP (IoU=0.50:0.95)']:.4f}")
         print(f"mAP (IoU=0.50): {val_summary['mAP (IoU=0.50)']:.4f}")
         print(f"mAP (IoU=0.75): {val_summary['mAP (IoU=0.75)']:.4f}")
         print(f"mAP (Small): {val_summary['mAP (Small)']:.4f}")
         print("---------------------------------")
     else:
-        print("Could not compute metrics. (This is expected if dummy file was used)")
-
-
+        print("Could not compute metrics.")
 
     model_name = f"maskrcnn_epoch_{epoch+1}.pth"
     save_path = os.path.join(save_dir, model_name)

@@ -100,8 +100,8 @@ optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
 
 lr_sched = OneCycleLR(optimizer, 
                     max_lr=1e-3,
-                    epochs=total_epochs, # Total epochs
-                    steps_per_epoch=len(train_loader)) # Batches per epoch
+                    epochs=total_epochs,
+                    steps_per_epoch=len(train_loader))
 
 def train_one_epoch():
     model.train()
@@ -148,19 +148,16 @@ def eval_once():
 
     return loss_sum / total, correct / total
 
-save_dir = "/home/vault/iwso/iwso195h/TCD/cls_model_final2"
+save_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/cls_model_final")
 os.makedirs(save_dir)
-# ===== Train =====
+
 for epoch in range(total_epochs):
     tr_loss, tr_acc = train_one_epoch()
     te_loss, te_acc = eval_once()
 
-    # --- Optional: Add LR to see the scheduler work ---
     current_lr = optimizer.param_groups[0]['lr']
     print(f"Epoch {epoch+1:02d} | Train {tr_loss:.4f}/{tr_acc:.3f} | Test {te_loss:.4f}/{te_acc:.3f} | LR: {current_lr:.6f}")
-    # --- End of change ---
 
-    # print(f"Epoch {epoch+1:02d} | Train {tr_loss:.4f}/{tr_acc:.3f} | Test {te_loss:.4f}/{te_acc:.3f}")
     model_path = os.path.join(save_dir, f"resnet50_aerial_{epoch}.pth")
 
     torch.save(model.state_dict(), model_path)
