@@ -1,4 +1,3 @@
-"""Infer and prepare output for submission"""
 import os, json
 import torch.nn as nn
 import torch
@@ -12,46 +11,90 @@ from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 import cv2
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+from src.model_utils import *
+from torchvision.ops import MultiScaleRoIAlign
+from torchvision.models.detection import MaskRCNN
+from torchvision.models.detection.rpn import AnchorGenerator
 
-IMG_DIR = "/home/vault/iwso/iwso195h/TCD/data/val"
-IMG_DIR = os.path.join(os.getenv("HPCVAULT"), "TCD/data/val")
-CHECKPOINT = os.path.join(os.getenv("HPCVAULT"), "TCD/Train_MASK_RCNN_Run_1.0/maskrcnn_epoch_90.pth")
-CLS_CHECKPOINT = os.path.join(os.getenv("HPCVAULT"), "TCD/cls_model_final2/resnet50_aerial_25.pth")
-OUT_JSON = "data/preds8.json"
+# --- CONFIG ---
+HPC_VAULT = os.getenv("HPCVAULT")
+IMG_DIR = os.path.join(HPC_VAULT, "TCD/data/val")
+CHECKPOINT = os.path.join(HPC_VAULT, "TCD/Train_MASK_RCNN_Run_1.5/maskrcnn_epoch_74.pth")
+CLS_CHECKPOINT = os.path.join(HPC_VAULT, "TCD/cls_model_final2/resnet50_aerial_25.pth")
+OUT_JSON = "data/preds_dino.json"
 CLASS_NAMES  = ["background", "individual_tree", "group_of_trees"]
 CLASSES = ['agriculture_plantation','rural_area','urban_area','open_field','industrial_area']
-SCORE_THR = 0.5
+SCORE_THR = 0.05 # Keep low for Recall
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-def mask_to_polygon(bin_mask, max_pts=128):
+# --- FIXED FUNCTION: Returns Single Flat List [x,y,x,y...] ---
+def mask_to_polygon(bin_mask, min_area=20.0):
     m = bin_mask.astype(np.uint8)
-    if m.max() == 0: return []
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts: return []
+    
+    if not cnts: 
+        return []
+        
+    # 1. Select the largest contour to satisfy the "Single List" requirement
     cnt = max(cnts, key=cv2.contourArea)
+    
+    if cv2.contourArea(cnt) < min_area:
+        return []
+
+    # 2. Use high precision (0.002) to keep the tree shape detailed
     peri = cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, 0.01 * peri, True).reshape(-1, 2)
-    if len(approx) > max_pts:
-        idx = np.linspace(0, len(approx) - 1, max_pts).astype(int)
-        approx = approx[idx]
+    approx = cv2.approxPolyDP(cnt, 0.005 * peri, True).reshape(-1, 2)
+    
+    # Need at least 3 points (6 coords) for a polygon
+    if len(approx) < 3:
+        return []
+        
+    # 3. Flatten to [x1, y1, x2, y2, ...]
     return approx.astype(float).round(1).flatten().tolist()
 
 if __name__ == "__main__":
     aug = A.Compose([
         A.Resize(1024, 1024),
-        A.Normalize(mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225)),
-        ToTensorV2()])
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2()
+    ])
     
     cls_aug = A.Compose([
         A.Resize(224, 224),
-        A.Normalize(mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225)),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
     ])
 
     num_classes = 3
-    model = maskrcnn_resnet50_fpn_v2(weights="DEFAULT")
+    model_name = "timm/convnext_large.dinov3_lvd1689m"
+    backbone = DINOBackbone(model_name, True)
+    fpn = DINOV3FPN(backbone.in_channels_list, 256, backbone.feature_module_names)
+    pipe = CustomModelFPN(backbone, fpn)
+
+    anchor_generator = AnchorGenerator(
+        sizes=((16,), (32,), (64,), (128,), (256,), (512,)),
+        aspect_ratios=((0.5, 0.75, 1.0, 1.33, 2.0),) * 6
+    )
+
+    box_roi_pool = MultiScaleRoIAlign(
+            featmap_names=["p2", "p3", "p4", "p5", "p6", "p7"], 
+            output_size=7,
+            sampling_ratio=2,
+        )
+
+    mask_roi_pool = MultiScaleRoIAlign(
+            featmap_names=["p2", "p3", "p4", "p5", "p6", "p7"], 
+            output_size=14,
+            sampling_ratio=2,
+        )
+
+    model = MaskRCNN(
+        pipe,
+        num_classes=3,
+        box_roi_pool=box_roi_pool,
+        mask_roi_pool=mask_roi_pool,
+        rpn_anchor_generator=anchor_generator
+    )
 
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
@@ -60,74 +103,83 @@ if __name__ == "__main__":
     hidden_layer = 256
     model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
 
+    print(f"Loading weights from {CHECKPOINT}")
     model.load_state_dict(torch.load(CHECKPOINT, map_location=DEVICE), strict=True)
-    print(f"Loaded weights from {CHECKPOINT}")
+    model.eval().to(DEVICE)
 
     cls_model = models.resnet152(weights=None)
     cls_model.fc = nn.Linear(cls_model.fc.in_features, len(CLASSES))
     cls_model.load_state_dict(torch.load(CLS_CHECKPOINT, map_location=DEVICE))
-    print(f"Loaded weights from {CLS_CHECKPOINT}")
+    print(f"Loaded CLS weights from {CLS_CHECKPOINT}")
+    cls_model.eval().to(DEVICE)
 
-    model.eval()
-    model.to(DEVICE)
-
-    cls_model.eval()
-    cls_model.to(DEVICE)
-
-    images = os.listdir(IMG_DIR)
+    if not os.path.exists(IMG_DIR):
+        print("IMG_DIR not found")
+        exit()
+        
+    images = [x for x in os.listdir(IMG_DIR) if x.endswith(('.png', '.jpg', '.tif'))]
     print("Total Images:", len(images))
-    if not images:
-        raise SystemExit(f"No images under {IMG_DIR}")
 
     out = {"images": []}
     for im_no, p in enumerate(images):
-        print("Evaluating Image No:", im_no)
-        im = Image.open(p).convert("RGB")
+        if im_no % 10 == 0: print(im_no)
+        path = os.path.join(IMG_DIR, p)
+        im = Image.open(path).convert("RGB")
         W, H = im.size
-        im = np.array(im)
-        x = aug(image=im)['image'].to(DEVICE)
-        cls_x = cls_aug(image=im)['image'].unsqueeze(0).to(DEVICE)
+        im_np = np.array(im)
+        x = aug(image=im_np)['image'].to(DEVICE)
+        cls_x = cls_aug(image=im_np)['image'].unsqueeze(0).to(DEVICE)
 
         with torch.inference_mode():
             y = model([x])[0]
             pred_cls = cls_model(cls_x)
-            
             probs = torch.softmax(pred_cls, dim=1)
             pred_idx = int(probs.argmax(dim=1).cpu().item())
             pred_class = CLASSES[pred_idx]
-            # print(pred_class)
 
-        boxes  = y.get("boxes", torch.empty(0,4)).detach().cpu().numpy()
-        labels = y.get("labels", torch.empty(0,)).detach().cpu().numpy().astype(int)
-        scores = y.get("scores", torch.empty(0,)).detach().cpu().numpy()
-        masks  = y.get("masks", None)
-        masks  = masks.detach().cpu().numpy()[:,0] if masks is not None else None  # [N,H,W]
+        boxes  = y.get("boxes").detach().cpu().numpy()
+        labels = y.get("labels").detach().cpu().numpy().astype(int)
+        scores = y.get("scores").detach().cpu().numpy()
+        masks  = y.get("masks")
+        if masks is not None:
+            masks = masks.detach().cpu().numpy()[:,0]
 
         anns = []
         for i in range(len(boxes)):
             if scores[i] < SCORE_THR: 
                 continue
+            
             cls = labels[i]
-            if cls < 0 or cls >= len(CLASS_NAMES):
+            if cls <= 0 or cls >= len(CLASS_NAMES):
                 continue
+                
             seg = []
-            if masks is not None and masks.shape[-2:] == (H, W):
+            if masks is not None:
+                # Calling the fixed Flat-List function
                 seg = mask_to_polygon(masks[i] > 0.5)
-            if not seg:
+                
+            # Fallback if mask failed or was empty
+            if not seg or len(seg) < 6:
                 x1, y1, x2, y2 = boxes[i].tolist()
+                # Fixed Fallback: FLAT LIST, not list of lists
                 seg = [x1, y1, x2, y1, x2, y2, x1, y2]
 
             anns.append({
                 "class": CLASS_NAMES[cls],
                 "confidence_score": float(scores[i]),
-                "segmentation": [float(v) for v in seg],
+                "segmentation": seg, # Now guaranteed to be [x,y,x,y...]
             })
+
+        try:
+            res = int(p.split("cm")[0])
+        except:
+            res = 0
 
         out["images"].append({
             "file_name": p,
             "width": W,
             "height": H,
-            "cm_resolution": int(p.split("cm")[0]),
+            "cm_resolution": res,
             "scene_type": pred_class,
             "annotations": anns
         })

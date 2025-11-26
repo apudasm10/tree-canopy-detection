@@ -10,6 +10,7 @@ from torch.optim import SGD
 from tqdm import tqdm
 import time
 from datetime import timedelta
+from src.model_utils import *
 
 torch.cuda.empty_cache()
 

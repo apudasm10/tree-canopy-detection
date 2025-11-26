@@ -89,6 +89,8 @@ def save_gt_pred_vis(model, dataset, idx, out_path,
         pr_label = np.zeros((export_size, export_size), dtype=np.uint8)
     pr_rgb = colorize_class_mask(pr_label)
 
+    print(pred)
+    print("---------------------------------")
     # overlays
     left_overlay  = overlay(left,  gt_rgb, alpha=0.45)
     right_overlay = overlay(right, pr_rgb, alpha=0.45)
@@ -138,7 +140,7 @@ if __name__ == "__main__":
         run = sys.argv[2]
         run_model = sys.argv[3]
 
-    checkpoint = f"/home/vault/iwso/iwso195h/TCD/Run {run}/maskrcnn_epoch_{run_model}.pth"
+    checkpoint = f"/home/vault/iwso/iwso195h/TCD/Run Final2/maskrcnn_epoch_{run_model}.pth"
     out_path = f"viz/gt_pred_{idx}_{run}_{run_model}.png"
 
     # checkpoint = "/home/vault/iwso/iwso195h/TCD/Run 1/maskrcnn_epoch_50.pth"
