@@ -39,13 +39,13 @@ class CocoMaskDataset(Dataset):
                 A.VerticalFlip(p=0.5),
                 A.RandomBrightnessContrast(p=0.3),
                 A.HueSaturationValue(p=0.3),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                A.ToFloat(max_value=255.0),
                 ToTensorV2()
             ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
         else:
             return A.Compose([
                 A.Resize(H, W),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                A.ToFloat(max_value=255.0),
                 ToTensorV2()
             ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
 
