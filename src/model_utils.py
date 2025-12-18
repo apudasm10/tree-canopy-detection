@@ -1,11 +1,8 @@
-import torch
 import timm
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import OrderedDict
 from torchvision.ops import FeaturePyramidNetwork
 from torchvision.ops.feature_pyramid_network import ExtraFPNBlock
-
 
 
 class LastLevelP6P7(ExtraFPNBlock):
@@ -32,47 +29,95 @@ class LastLevelP6P7(ExtraFPNBlock):
         return p, names
 
 
-class DINOV3FPN(nn.Module):
-    def __init__(self, in_dims, out_dim, feature_module_names, *args, **kwargs):
+class CustomFPN(nn.Module):
+    def __init__(self, in_dims, out_dim, feature_module_names, vit_implementation=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.in_dims = in_dims
+        if len(self.in_dims) == 5:
+            self.in_dims = in_dims[1:]
         self.out_dim = out_dim
         self.feature_module_names = feature_module_names
+        if len(self.feature_module_names) == 5:
+            self.feature_module_names = feature_module_names[1:]
+        self.vit_implementation = vit_implementation
 
-        self.c2 = nn.Conv2d(in_dims[0], in_dims[0], 3, 2, 1)
-        self.c3 = nn.Conv2d(in_dims[1], in_dims[1], 3, 2, 1)
-        self.c4 = nn.Conv2d(in_dims[2], in_dims[2], 3, 2, 1)
-        self.c5 = nn.Conv2d(in_dims[3], in_dims[3], 3, 2, 1)
+        if self.vit_implementation:
+            # ViT Output is Stride 16. We need to reconstruct Strides 4, 8, 16, 32.
+            embed_dim = in_dims[0]
 
-        extra_block = LastLevelP6P7(in_channels=out_dim, out_channels=out_dim)
-        self.fpn = FeaturePyramidNetwork(in_dims, out_dim, extra_blocks=extra_block)
+            self.in_dims = [embed_dim, embed_dim, embed_dim, embed_dim]
+            
+            self.c2 = nn.Sequential(
+            nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2), # 1/16 -> 1/8
+            nn.GroupNorm(32, embed_dim), # Normalization helps stability
+            nn.GELU(),
+            nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2)  # 1/8 -> 1/4
+            )
+
+            # C3 (Target: 1/8 scale) -> Upsample 2x from 1/16
+            self.c3 = nn.Sequential(
+                nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2)
+            )
+
+            # C4 (Target: 1/16 scale) -> Identity (It is already 1/16)
+            self.c4 = nn.Identity()
+
+            # C5 (Target: 1/32 scale) -> Downsample 2x from 1/16
+            self.c5 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        extra_block = LastLevelP6P7(in_channels=self.out_dim, out_channels=self.out_dim)
+        self.fpn = FeaturePyramidNetwork(self.in_dims, self.out_dim, extra_blocks=extra_block)
 
     def forward(self, inputs):
-        c2 = self.c2(inputs[0])
-        c3 = self.c3(inputs[1])
-        c4 = self.c4(inputs[2])
-        c5 = self.c5(inputs[3])
+
+        if len(inputs) == 5:
+            inputs = inputs[1:]
+        if self.vit_implementation:
+            last_feat = inputs[-1]
+            c2 = self.c2(last_feat)
+            c3 = self.c3(last_feat)
+            c4 = self.c4(last_feat)
+            c5 = self.c5(last_feat)
+        else:
+            c2 = inputs[0]
+            c3 = inputs[1]
+            c4 = inputs[2]
+            c5 = inputs[3]
 
         return self.fpn({"p2": c2, "p3": c3, "p4": c4, "p5": c5})
     
 
-class DINOBackbone(nn.Module):
-    def __init__(self, model_name, freeze, *args, **kwargs):
+class CustomBackbone(nn.Module):
+    def __init__(self, model_name, freeze=True, unfreeze_pct=.25, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.model_name = model_name
+        self.is_swin = "swin" in model_name
+        self.vit_implementation = "vit" in model_name
 
-        self.backbone = timm.create_model(model_name, features_only=True, pretrained=True)
+        if self.is_swin:
+            self.backbone = timm.create_model(model_name, features_only=True, pretrained=True, img_size=None, strict_img_size=False)
+        else:
+            self.backbone = timm.create_model(model_name, features_only=True, pretrained=True)
         self.out_indices = self.backbone.feature_info.out_indices
-        self.backbone = self.backbone.eval()
-        if freeze:
-            for params in self.backbone.parameters():
-                params.requires_grad = False
+
+        for params in self.backbone.parameters():
+            params.requires_grad = False
+        if not freeze:
+            self.backbone = unfreeze_backbone_by_pct(self.backbone, unfreeze_pct=unfreeze_pct)
 
         self.in_channels_list = self.backbone.feature_info.channels()
         self.feature_module_names = self.backbone.feature_info.module_name()
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.backbone.eval() 
+        return self
     
     def forward(self, x):
         outputs = self.backbone(x)
+
+        if self.is_swin:
+            outputs = [o.permute(0, 3, 1, 2).contiguous() for o in outputs]
 
         return outputs
     
@@ -89,3 +134,24 @@ class CustomModelFPN(nn.Module):
         out = self.fpn(out)
 
         return out
+    
+def unfreeze_backbone_by_pct(backbone, unfreeze_pct=.25):        
+    total_params = sum(p.numel() for p in backbone.parameters())
+    paramater_to_unfreeze = total_params*unfreeze_pct
+    params = list(backbone.named_parameters())
+    
+    unfrozen_count = 0
+    last_unfrozen_layer = None
+    
+    for name, param in reversed(params):
+        if unfrozen_count >= paramater_to_unfreeze:
+            break
+            
+        param.requires_grad = True
+        unfrozen_count += param.numel()
+        last_unfrozen_layer = name
+        
+    print(f"--> Unfrozen Backbone Params: {unfrozen_count / 1e6:.2f} M ({100 * unfrozen_count / total_params:.1f}%)")
+    print(f"--> Deepest unfrozen layer: {last_unfrozen_layer}")
+    
+    return backbone

@@ -11,9 +11,8 @@ import cv2
 
 
 class CocoMaskDataset(Dataset):
-    def __init__(self, img_dir, ann_file, resize=(224, 224), augment=True, train=True):
+    def __init__(self, img_dir, ann_file, augment=True, train=True):
         self.img_dir = img_dir
-        self.resize = resize
         self.augment = augment
 
         with open(ann_file, "r") as f:
@@ -31,10 +30,8 @@ class CocoMaskDataset(Dataset):
         self.transform = self._build_transform()
 
     def _build_transform(self):
-        H, W = self.resize
         if self.augment:
             return A.Compose([
-                A.Resize(H, W),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomBrightnessContrast(p=0.3),
@@ -44,7 +41,6 @@ class CocoMaskDataset(Dataset):
             ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
         else:
             return A.Compose([
-                A.Resize(H, W),
                 A.ToFloat(max_value=255.0),
                 ToTensorV2()
             ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
