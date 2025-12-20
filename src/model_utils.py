@@ -27,10 +27,22 @@ class LastLevelP6P7(ExtraFPNBlock):
         p.extend([p6, p7])
         names.extend(["p6", "p7"])
         return p, names
+    
+
+class LastLevelMaxPool(ExtraFPNBlock):
+    """
+    Applies a max_pool2d (not actual max_pool2d, we just subsample) on top of the last feature map
+    """
+
+    def forward(self, x, y, names):
+        names.append("pool")
+        # Use max pooling to simulate stride 2 subsampling
+        x.append(F.max_pool2d(x[-1], kernel_size=1, stride=2, padding=0))
+        return x, names
 
 
 class CustomFPN(nn.Module):
-    def __init__(self, in_dims, out_dim, feature_module_names, vit_implementation=False, *args, **kwargs):
+    def __init__(self, in_dims, out_dim, feature_module_names, last_level="LastLevelMaxPool", vit_implementation=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.in_dims = in_dims
         if len(self.in_dims) == 5:
@@ -64,8 +76,12 @@ class CustomFPN(nn.Module):
 
             # C5 (Target: 1/32 scale) -> Downsample 2x from 1/16
             self.c5 = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        extra_block = LastLevelP6P7(in_channels=self.out_dim, out_channels=self.out_dim)
+        if last_level=="LastLevelP6P7":
+            extra_block = LastLevelP6P7(in_channels=self.out_dim, out_channels=self.out_dim)
+        elif last_level=="LastLevelMaxPool":
+            extra_block = LastLevelMaxPool()
+        else:
+            print("Define a valid last_level: [LastLevelMaxPool, LastLevelP6P7]")
         self.fpn = FeaturePyramidNetwork(self.in_dims, self.out_dim, extra_blocks=extra_block)
 
     def forward(self, inputs):

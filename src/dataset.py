@@ -4,98 +4,70 @@ import numpy as np
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
-from pycocotools import mask as coco_mask
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 import cv2
 
 
-class CocoMaskDataset(Dataset):
-    def __init__(self, img_dir, ann_file, augment=True, train=True):
+class TCDDataset(Dataset):
+    def __init__(self, img_dir, ann_file, augments):
         self.img_dir = img_dir
-        self.augment = augment
+        self.augments = augments
+        self.label2int = {"individual_tree": 1, "group_of_trees": 2}
 
         with open(ann_file, "r") as f:
-            coco = json.load(f)
-
-        self.images = coco["images"]
-        self.annotations = coco["annotations"]
-
-        # group annotations by image id
-        self.img2anns = {}
-        for ann in self.annotations:
-            self.img2anns.setdefault(ann["image_id"], []).append(ann)
-
-        # define Albumentations transforms
-        self.transform = self._build_transform()
-
-    def _build_transform(self):
-        if self.augment:
-            return A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.RandomBrightnessContrast(p=0.3),
-                A.HueSaturationValue(p=0.3),
-                A.ToFloat(max_value=255.0),
-                ToTensorV2()
-            ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
-        else:
-            return A.Compose([
-                A.ToFloat(max_value=255.0),
-                ToTensorV2()
-            ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
+            self.all_file = json.load(f)["images"]
 
     def __len__(self):
-        return len(self.images)
-
+        return len(self.all_file)
+    
     def __getitem__(self, idx):
-        img_info = self.images[idx]
-        img_path = os.path.join(self.img_dir, img_info["file_name"])
+        sample = self.all_file[idx]
+        img_path = os.path.join(self.img_dir, sample.get("file_name"))
         img = np.array(Image.open(img_path).convert("RGB"))
-        orig_h, orig_w = img.shape[:2]
+        annotations = sample.get("annotations")
+        width = sample.get("width")
+        height = sample.get("height")
 
-        anns = self.img2anns.get(img_info["id"], [])
+        boxes, labels, masks = [], [], []
+        for obj in annotations:
+            x_coords = obj.get("segmentation")[0::2]
+            y_coords = obj.get("segmentation")[1::2]
+            x1 = min(x_coords)
+            y1 = min(y_coords)
+            x2 = max(x_coords)
+            y2 = max(y_coords)
 
-        boxes, labels, masks, areas, iscrowd = [], [], [], [], []
-        for ann in anns:
-            x, y, bw, bh = ann["bbox"]
-            boxes.append([x, y, x + bw, y + bh])
-            labels.append(ann["category_id"])
-            areas.append(ann["area"])
-            iscrowd.append(ann.get("iscrowd", 0))
-
-            seg = ann.get("segmentation", [])
-            if seg:
-                if isinstance(seg[0], (int, float)):
-                    seg = [seg]
-                rles = coco_mask.frPyObjects(seg, orig_h, orig_w)
-                mask = coco_mask.decode(rles)
-                mask = mask.max(axis=2) if mask.ndim == 3 else mask
+            if x2 > x1 and y2 > y1:
+                boxes.append([x1, y1, x2, y2])
+                labels.append(self.label2int.get(obj["class"]))
+                mask = get_mask(obj.get("segmentation"), height, width)
                 masks.append(mask.astype(np.uint8))
             else:
-                masks.append(np.zeros((orig_h, orig_w), dtype=np.uint8))
+                print("Invalid bbox", [x1, y1, x2, y2])
 
-        if len(masks) > 0:
-            masks = np.stack(masks)
-        else:
-            masks = np.zeros((0, orig_h, orig_w), dtype=np.uint8)
+        if self.augments:
+            augmented = self.augments(image=img, masks=masks, bboxes=boxes, class_labels=labels)
+            img = augmented["image"]
+            boxes = augmented["bboxes"]
+            labels = augmented["class_labels"]
+            masks = augmented["masks"]
 
-        transformed = self.transform(image=img, masks=list(masks), bboxes=boxes, labels=labels)
-        img = transformed["image"]
-        masks = torch.stack([m for m in transformed["masks"]]) if len(transformed["masks"]) > 0 else torch.zeros((0, *self.resize), dtype=torch.uint8)
-        boxes = torch.as_tensor(transformed["bboxes"], dtype=torch.float32)
-        labels = torch.as_tensor(transformed["labels"], dtype=torch.int64)
+        areas = [np.count_nonzero(mask_i) for mask_i in masks]
         areas = torch.as_tensor(areas, dtype=torch.float32)
-        iscrowd = torch.as_tensor(iscrowd, dtype=torch.int64)
-        image_id = torch.tensor([img_info["id"]])
+        keep = areas > 0
+
+        image_id = torch.tensor([idx], dtype=torch.int64)
+        iscrowd = torch.zeros(len(areas), dtype=torch.int64)
+        masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
 
         target = {
-            "boxes": boxes,
-            "labels": labels,
-            "masks": masks,
+            "boxes": boxes[keep],
+            "labels": labels[keep],
+            "masks": masks[keep],
             "image_id": image_id,
-            "area": areas,
-            "iscrowd": iscrowd,
+            "area": areas[keep],
+            "iscrowd": iscrowd[keep],
         }
 
         return img, target
@@ -103,3 +75,21 @@ class CocoMaskDataset(Dataset):
 
 def collate_fn(batch):
     return tuple(zip(*batch))
+
+
+# def get_polygon_area(xs, ys):
+#     """
+#     returns polygon area via Shoelace formula
+#     """
+#     x = np.array(xs)
+#     y = np.array(ys)
+
+#     correction = x[-1] * y[0] - x[0] * y[-1]
+#     main_area = np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])
+    
+#     return 0.5 * np.abs(main_area + correction)
+
+def get_mask(segmentation, h, w):
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [np.array(segmentation, dtype=np.int32).reshape(-1, 2)], 1)
+    return mask
