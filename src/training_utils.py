@@ -37,7 +37,7 @@ def train_one_epoch(model, loader, opt, scaler, device, clip=5.0, desc=""):
 
 def evaluate(model, loader, device, desc=""):
     model.eval()
-    metric = MeanAveragePrecision(box_format='xyxy', iou_type="segm", max_detection_thresholds=[1, 100, 1000])
+    metric = MeanAveragePrecision(box_format='xyxy', iou_type="segm", max_detection_thresholds=[1, 100, 1030])
     pbar = tqdm(loader, total=len(loader), desc=desc, leave=False)
     with torch.no_grad():
         for imgs, targets in pbar:

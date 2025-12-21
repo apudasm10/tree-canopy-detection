@@ -6,7 +6,7 @@ from torchvision.ops import MultiScaleRoIAlign
 from torchvision.models.detection import MaskRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 # from src.metrics import *
-from training_utils import evaluate
+from src.training_utils import evaluate
 import torch
 from torch.optim import SGD
 from tqdm import tqdm
@@ -42,11 +42,15 @@ img_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/data/train")
 train_augments = A.Compose([
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
-    A.RandomBrightnessContrast(p=0.3),
-    A.HueSaturationValue(p=0.3),
+    A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.5),
+    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.3, p=0.5),
+    A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=40, val_shift_limit=20, p=0.5),
+    A.RandomGamma(gamma_limit=(80, 120), p=0.3),
     A.ToFloat(max_value=255.0),
     ToTensorV2()
 ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], min_visibility=0.2))
+
+aug_config = A.to_dict(train_augments)
 
 val_augments = A.Compose([
     A.ToFloat(max_value=255.0),
@@ -69,22 +73,22 @@ val_ds_eval = TCDDataset(
     augments=val_augments
 )
 
-train_idx, val_idx = train_test_split(range(150), train_size=0.8, random_state=42)
+train_idx, val_idx = train_test_split(range(150), train_size=0.8, shuffle=True, random_state=42)
 
 train_dataset = Subset(train_ds_aug,  train_idx)
-train_dataset_eval = Subset(train_ds_eval, train_idx)
+train_dataset_eval = Subset(train_ds_eval, train_idx[:30])
 val_dataset = Subset(val_ds_eval,   val_idx)
 
 print(f"Train: {len(train_dataset)} | Train-eval: {len(train_dataset_eval)} | Val: {len(val_dataset)}")
 
 BATCH_SIZE = 2
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=8, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=6, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 train_loader_eval = DataLoader(train_dataset_eval, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
 num_classes = 3
 last_level = "LastLevelMaxPool"
-model_name = "convnext_small.dinov3_lvd1689m"
+model_name = "convnext_large.dinov3_lvd1689m"
 backbone = CustomBackbone(model_name, False)
 
 fpn = CustomFPN(backbone.in_channels_list, 256, backbone.feature_module_names, last_level=last_level)
@@ -160,26 +164,40 @@ print("Running with accumulation_steps =", accumulation_steps)
 params_backbone = [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad]
 params_others = [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]
 
-optimizer = SGD([
-    {'params': params_backbone, 'lr': 1e-5, 'weight_decay': 0.0001}, # Very low LR for DINO Backbone
-    {'params': params_others, 'lr': 0.001, 'weight_decay': 0.0005}   # Standard LR for RPN/Heads
-], momentum=0.9)
+optimizer = torch.optim.AdamW([
+    {'params': params_backbone, 'lr': 5e-6, 'weight_decay': 0.05}, 
+    {'params': params_others, 'lr': 2e-4, 'weight_decay': 0.05}  
+])
 
 total_steps = num_epochs * (len(train_loader) // accumulation_steps)
-lr_sched = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[40, 60, 80], gamma=0.1)
+warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+    optimizer, 
+    start_factor=0.001, 
+    total_iters=5
+)
+
+main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs-5, eta_min=1e-7)
+
+lr_sched = torch.optim.lr_scheduler.SequentialLR(
+    optimizer, 
+    schedulers=[warmup_scheduler, main_scheduler], 
+    milestones=[5]
+)
 scaler = GradScaler('cuda') if device.type == 'cuda' else None
 clip = 5
 
 wandb.init(
     project=f"tcd-experiments-1",
-    name=f"{model_name}-{EXP_NAME}",
+    name=f"{model_name}-{EXP_NAME}_with_new_augs",
     config={
         "batch_size": BATCH_SIZE,
         "architecture": model_name,
         "epochs": num_epochs,
         "max_dets": MAX_DETS,
         "Exp": EXP_NAME,
-        "last_level": last_level
+        "last_level": last_level,
+        "augmentations": aug_config,
+        "accumulation_steps": accumulation_steps
     }
 )
 
@@ -230,7 +248,7 @@ for epoch in range(num_epochs):
     train_summary = evaluate(model, train_loader_eval, device)
     for k, v in train_summary.items():
         val = v.item() if isinstance(v, torch.Tensor) and v.numel() == 1 else v.tolist()
-        log_data[f"val_{k}"] = val
+        log_data[f"train_{k}"] = val
 
     print("\nSummarizing validation metrics...")
     val_summary = evaluate(model, val_loader, device)
