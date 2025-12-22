@@ -42,6 +42,7 @@ img_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/data/train")
 train_augments = A.Compose([
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
+    A.RandomRotate90(p=0.5),
     A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.5),
     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.3, p=0.5),
     A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=40, val_shift_limit=20, p=0.5),
@@ -150,7 +151,7 @@ in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
 hidden_layer = 256
 model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
 
-EXP_NAME = "Mask_RCNN_Run_1"
+EXP_NAME = "Mask_RCNN_Run_1_with_rotate90"
 save_dir = os.path.join(os.getenv("HPCVAULT"), f"TCD/{EXP_NAME}")
 
 os.makedirs(save_dir, exist_ok=True)
@@ -188,7 +189,7 @@ clip = 5
 
 wandb.init(
     project=f"tcd-experiments-1",
-    name=f"{model_name}-{EXP_NAME}_with_new_augs",
+    name=f"{model_name}-{EXP_NAME}_with_rotate90",
     config={
         "batch_size": BATCH_SIZE,
         "architecture": model_name,
