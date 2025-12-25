@@ -5,12 +5,16 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 import cv2
+from torchvision.ops import masks_to_boxes
+import albumentations as A
 
 
 class TCDDataset(Dataset):
-    def __init__(self, img_dir, ann_file, augments):
+    def __init__(self, img_dir, ann_file, augments, target_gsd=20.0, crop_size=444):
         self.img_dir = img_dir
         self.augments = augments
+        self.target_gsd = target_gsd
+        self.crop_size = crop_size
         self.label2int = {"individual_tree": 1, "group_of_trees": 2}
 
         with open(ann_file, "r") as f:
@@ -23,51 +27,87 @@ class TCDDataset(Dataset):
         sample = self.all_file[idx]
         img_path = os.path.join(self.img_dir, sample.get("file_name"))
         img = np.array(Image.open(img_path).convert("RGB"))
+        
+        current_gsd = float(sample.get("cm_resolution"))
+        scale = current_gsd / self.target_gsd
+        h, w = img.shape[:2]
+        
+        src_size = int(self.crop_size / scale) 
+
+        # 2. GENERATE SINGLE ID MASK (Memory Safe)
+        # 0=Background, 1=Tree1, 2=Tree2...
+        id_mask = np.zeros((h, w), dtype=np.int32)
+        id_to_label = {}
+        
         annotations = sample.get("annotations")
-        width = sample.get("width")
-        height = sample.get("height")
+        for i, obj in enumerate(annotations, 1):
+            poly = np.array(obj.get("segmentation"), dtype=np.int32).reshape(-1, 2)
+            cv2.fillPoly(id_mask, [poly], i)
+            id_to_label[i] = self.label2int.get(obj["class"], 1)
 
-        boxes, labels, masks = [], [], []
-        for obj in annotations:
-            x_coords = obj.get("segmentation")[0::2]
-            y_coords = obj.get("segmentation")[1::2]
-            x1 = min(x_coords)
-            y1 = min(y_coords)
-            x2 = max(x_coords)
-            y2 = max(y_coords)
+        # 3. DEFINE CROP TRANSFORM (Albumentations Function) 
+        # Randomly pick coordinates
+        pad_h, pad_w = max(0, src_size - h), max(0, src_size - w)
+        if pad_h > 0 or pad_w > 0:
+            img = cv2.copyMakeBorder(img, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0)
+            id_mask = cv2.copyMakeBorder(id_mask, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0)
+            h, w = img.shape[:2]
 
-            if x2 > x1 and y2 > y1:
-                boxes.append([x1, y1, x2, y2])
-                labels.append(self.label2int.get(obj["class"]))
-                mask = get_mask(obj.get("segmentation"), height, width)
-                masks.append(mask.astype(np.uint8))
-            else:
-                print("Invalid bbox", [x1, y1, x2, y2])
+        x = np.random.randint(0, w - src_size + 1)
+        y = np.random.randint(0, h - src_size + 1)
+
+        # The Magic Function: Crops & Resizes Image + ID Mask together
+        crop_aug = A.Compose([
+            A.Crop(x, y, x_max=x+src_size, y_max=y+src_size),
+            A.Resize(height=self.crop_size, width=self.crop_size, 
+                     interpolation=cv2.INTER_CUBIC, 
+                     mask_interpolation=cv2.INTER_NEAREST) # NEAREST is required for IDs
+        ])
+        
+        augmented_crop = crop_aug(image=img, mask=id_mask)
+        img = augmented_crop["image"]
+        id_mask = augmented_crop["mask"]
+
+        # 4. RECONSTRUCT BINARY MASKS (Now they are small -> Safe)
+        masks, labels = [], []
+        visible_ids = np.unique(id_mask)
+        
+        for oid in visible_ids:
+            if oid == 0: continue
+            masks.append((id_mask == oid).astype(np.uint8))
+            labels.append(id_to_label[oid])
 
         if self.augments:
-            augmented = self.augments(image=img, masks=masks, bboxes=boxes, class_labels=labels)
+            augmented = self.augments(image=img, masks=masks, class_labels=labels)
             img = augmented["image"]
-            boxes = augmented["bboxes"]
-            labels = augmented["class_labels"]
             masks = augmented["masks"]
 
+        masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
         areas = [np.count_nonzero(mask_i) for mask_i in masks]
         areas = torch.as_tensor(areas, dtype=torch.float32)
-        keep = areas > 0
-
-        image_id = torch.tensor([idx], dtype=torch.int64)
-        iscrowd = torch.zeros(len(areas), dtype=torch.int64)
-        masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
-        boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        labels = torch.as_tensor(labels, dtype=torch.int64)
-
-        target = {
-            "boxes": boxes[keep],
-            "labels": labels[keep],
-            "masks": masks[keep],
-            "image_id": image_id,
-            "area": areas[keep],
-            "iscrowd": iscrowd[keep],
+        
+        if len(masks) > 0:
+            boxes = masks_to_boxes(masks)
+            widths = boxes[:, 2] - boxes[:, 0]
+            heights = boxes[:, 3] - boxes[:, 1]
+            keep = (areas > 0) & (widths >= 1) & (heights >= 1)
+            target = {
+                "boxes": boxes[keep],
+                "labels": labels[keep],
+                "masks": masks[keep],
+                "image_id": torch.tensor([idx], dtype=torch.int64),
+                "area": areas[keep],
+                "iscrowd": torch.zeros(len(boxes), dtype=torch.int64)
+            }
+        else:
+            target = {
+            "boxes": torch.zeros((0, 4), dtype=torch.float32),
+            "labels": torch.zeros((0,), dtype=torch.int64),
+            "masks": torch.zeros((0, h, w), dtype=torch.uint8),
+            "image_id": torch.tensor([idx], dtype=torch.int64),
+            "area": torch.zeros((0,), dtype=torch.float32),
+            "iscrowd": torch.zeros((0,), dtype=torch.int64)
         }
 
         return img, target
@@ -75,21 +115,3 @@ class TCDDataset(Dataset):
 
 def collate_fn(batch):
     return tuple(zip(*batch))
-
-
-# def get_polygon_area(xs, ys):
-#     """
-#     returns polygon area via Shoelace formula
-#     """
-#     x = np.array(xs)
-#     y = np.array(ys)
-
-#     correction = x[-1] * y[0] - x[0] * y[-1]
-#     main_area = np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])
-    
-#     return 0.5 * np.abs(main_area + correction)
-
-def get_mask(segmentation, h, w):
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillPoly(mask, [np.array(segmentation, dtype=np.int32).reshape(-1, 2)], 1)
-    return mask
