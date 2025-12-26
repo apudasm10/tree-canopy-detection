@@ -19,9 +19,9 @@ from torchvision.models.detection.rpn import AnchorGenerator
 # --- CONFIG ---
 HPC_VAULT = os.getenv("HPCVAULT")
 IMG_DIR = os.path.join(HPC_VAULT, "TCD/data/val")
-CHECKPOINT = os.path.join(HPC_VAULT, "TCD/Train_MASK_RCNN_Run_1.5/maskrcnn_epoch_74.pth")
+CHECKPOINT = os.path.join(HPC_VAULT, "TCD//Mask_RCNN_Run_1/maskrcnn_epoch_45.pth")
 CLS_CHECKPOINT = os.path.join(HPC_VAULT, "TCD/cls_model_final2/resnet50_aerial_25.pth")
-OUT_JSON = "data/preds_dino.json"
+OUT_JSON = "data/preds_dino_new.json"
 CLASS_NAMES  = ["background", "individual_tree", "group_of_trees"]
 CLASSES = ['agriculture_plantation','rural_area','urban_area','open_field','industrial_area']
 SCORE_THR = 0.05 # Keep low for Recall
@@ -54,8 +54,7 @@ def mask_to_polygon(bin_mask, min_area=20.0):
 
 if __name__ == "__main__":
     aug = A.Compose([
-        A.Resize(1024, 1024),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        A.ToFloat(max_value=255.0),
         ToTensorV2()
     ])
     
@@ -66,35 +65,61 @@ if __name__ == "__main__":
     ])
 
     num_classes = 3
-    model_name = "timm/convnext_large.dinov3_lvd1689m"
-    backbone = DINOBackbone(model_name, True)
-    fpn = DINOV3FPN(backbone.in_channels_list, 256, backbone.feature_module_names)
+    last_level = "LastLevelMaxPool"
+    model_name = "convnext_large.dinov3_lvd1689m"
+    backbone = CustomBackbone(model_name, False)
+
+    fpn = CustomFPN(backbone.in_channels_list, 256, backbone.feature_module_names, last_level=last_level)
+
     pipe = CustomModelFPN(backbone, fpn)
 
+    if last_level == "LastLevelMaxPool":
+        featmap_names_box=["p2", "p3", "p4", "p5", "pool"]
+        featmap_names_mask=["p2", "p3", "p4", "p5"]
+        sizes=((8, 16,), (32, 48), (64, 96), (128, 256), (384, 512))
+        aspect_ratios=((0.75, 1.0, 1.33),) * 5
+    elif last_level == "LastLevelP6P7":
+        featmap_names_box=["p2", "p3", "p4", "p5", "p6", "p7"]
+        featmap_names_mask=["p2", "p3", "p4", "p5"]
+        sizes=((8, 16,), (32, 48), (64, 96), (128, 192), (256, 384), (512, 1024))
+        aspect_ratios=((0.75, 1.0, 1.33),) * 6
+    else:
+        print("Define a valid last_level: [LastLevelMaxPool, LastLevelP6P7]")
+
     anchor_generator = AnchorGenerator(
-        sizes=((16,), (32,), (64,), (128,), (256,), (512,)),
-        aspect_ratios=((0.5, 0.75, 1.0, 1.33, 2.0),) * 6
+        sizes=sizes,
+        aspect_ratios=aspect_ratios
     )
 
     box_roi_pool = MultiScaleRoIAlign(
-            featmap_names=["p2", "p3", "p4", "p5", "p6", "p7"], 
+            featmap_names=featmap_names_box,
             output_size=7,
             sampling_ratio=2,
         )
 
     mask_roi_pool = MultiScaleRoIAlign(
-            featmap_names=["p2", "p3", "p4", "p5", "p6", "p7"], 
-            output_size=14,
+            featmap_names=featmap_names_mask,
+            output_size=28,
             sampling_ratio=2,
         )
 
+    MAX_DETS = 1050
     model = MaskRCNN(
         pipe,
         num_classes=3,
         box_roi_pool=box_roi_pool,
         mask_roi_pool=mask_roi_pool,
-        rpn_anchor_generator=anchor_generator
+        rpn_anchor_generator=anchor_generator,
+        box_detections_per_img=MAX_DETS,
+        min_size=1024,
+        max_size=1024,
+        rpn_pre_nms_top_n_train=5000,
+        rpn_pre_nms_top_n_test=3000,
+        rpn_post_nms_top_n_train=3000,
+        rpn_post_nms_top_n_test=2000,
     )
+
+    print("Model created.")
 
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)

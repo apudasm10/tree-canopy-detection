@@ -126,7 +126,7 @@ mask_roi_pool = MultiScaleRoIAlign(
         sampling_ratio=2,
     )
 
-MAX_DETS = 1050
+MAX_DETS = 300
 model = MaskRCNN(
     pipe,
     num_classes=3,
@@ -134,12 +134,12 @@ model = MaskRCNN(
     mask_roi_pool=mask_roi_pool,
     rpn_anchor_generator=anchor_generator,
     box_detections_per_img=MAX_DETS,
-    min_size=1024,
-    max_size=1024,
-    rpn_pre_nms_top_n_train=5000,
-    rpn_pre_nms_top_n_test=3000,
-    rpn_post_nms_top_n_train=3000,
-    rpn_post_nms_top_n_test=2000,
+    min_size=444,
+    max_size=444,
+    rpn_pre_nms_top_n_train=3000,
+    rpn_pre_nms_top_n_test=2000,
+    rpn_post_nms_top_n_train=2000,
+    rpn_post_nms_top_n_test=1500,
 )
 
 print("Model created.")
