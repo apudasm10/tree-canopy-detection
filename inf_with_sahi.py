@@ -20,18 +20,19 @@ from sahi.predict import get_sliced_prediction
 from sahi.utils.cv import read_image_as_pil
 from sahi.utils.cv import visualize_object_predictions
 import matplotlib.pyplot as plt
+from src.utils import padded_img
 
-
-# --- CONFIG ---
-HPC_VAULT = os.getenv("HPCVAULT")
-IMG_DIR = os.path.join(HPC_VAULT, "TCD/data/val")
-CHECKPOINT = os.path.join(HPC_VAULT, "TCD//Mask_RCNN_Run_1/maskrcnn_epoch_45.pth")
+torch.cuda.empty_cache()
+CHECKPOINT = "models/Mask_RCNN_Run_1/maskrcnn_epoch_45.pth"
 OUT_JSON = "data/preds_dino_new.json"
 CLASS_NAMES  = ["bg", "individual_tree", "group_of_trees"]
-# CLASSES = ['agriculture_plantation','rural_area','urban_area','open_field','industrial_area']
-SCORE_THR = 0.05 # Keep low for Recall
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-crop_size=444
+CROP_SIZE=512
+OVERLAP_RATIO = 0.25
+OVERLAP_PIXELS = int(CROP_SIZE * OVERLAP_RATIO)
+STRIDE = CROP_SIZE - OVERLAP_PIXELS
+
+print(f"crop_size: {CROP_SIZE}, overlap_pixels: {OVERLAP_PIXELS}, stride: {STRIDE}")
 
 aug = A.Compose([
     A.ToFloat(max_value=255.0),
@@ -40,7 +41,7 @@ aug = A.Compose([
 
 num_classes = 3
 last_level = "LastLevelMaxPool"
-model_name = "convnext_large.dinov3_lvd1689m"
+model_name = "convnext_small.dinov3_lvd1689m"
 backbone = CustomBackbone(model_name, False)
 
 fpn = CustomFPN(backbone.in_channels_list, 256, backbone.feature_module_names, last_level=last_level)
@@ -85,8 +86,8 @@ model = MaskRCNN(
     mask_roi_pool=mask_roi_pool,
     rpn_anchor_generator=anchor_generator,
     box_detections_per_img=MAX_DETS,
-    min_size=crop_size,
-    max_size=crop_size,
+    min_size=CROP_SIZE,
+    max_size=CROP_SIZE,
     rpn_pre_nms_top_n_train=3000,
     rpn_pre_nms_top_n_test=2000,
     rpn_post_nms_top_n_train=2000,
@@ -109,20 +110,23 @@ model.eval().to(DEVICE)
 detection_model = AutoDetectionModel.from_pretrained(
         model_type='torchvision',
         model=model,
-        confidence_threshold=0.5,
+        confidence_threshold=0.3,
         device=DEVICE,
         category_mapping={str(i): CLASS_NAMES[i] for i in range(1, len(CLASS_NAMES))},
         # category_remapping={CLASS_NAMES[i]: i for i in range(1, len(CLASS_NAMES))}
     )
 
-image_path = "data/60cm_train_113.tif"
+image_path = "data/10cm_train_13.tif"
+img = padded_img(image_path, target_gsd=20.0, crop_size=CROP_SIZE, stride_pixels=STRIDE)
+
 result = get_sliced_prediction(
-        image_path,
+        img,
         detection_model,
-        slice_height=crop_size,
-        slice_width=crop_size,
-        overlap_height_ratio=0.2,
-        overlap_width_ratio=0.2
+        slice_height=CROP_SIZE,
+        slice_width=CROP_SIZE,
+        overlap_height_ratio=OVERLAP_RATIO,
+        overlap_width_ratio=OVERLAP_RATIO,
+        verbose=2,
     )
 
 print(result)
@@ -149,9 +153,10 @@ visual_result = visualize_object_predictions(
     text_th=1
 )
 
+print("Visualization done.")
 # 2. Show it
 plt.figure(figsize=(15, 15))
-plt.imshow(visual_result["image"])
+plt.imshow(visual_result["image"][0:1024, 0:1024, :])
 plt.axis("off")
 plt.savefig("prediction.png")
 print("Saved prediction visualization to prediction.png")

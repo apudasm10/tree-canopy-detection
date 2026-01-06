@@ -21,7 +21,7 @@ from datetime import timedelta
 from src.model_utils import *
 from src.dataset import TCDDataset, collate_fn
 from sklearn.model_selection import train_test_split
-import wandb
+# import wandb
 
 torch.cuda.empty_cache()
 
@@ -31,13 +31,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using:", device)
 
-with open("./../api-keys.json") as s:
-    secrets = json.load(s)
+# with open("./../api-keys.json") as s:
+#     secrets = json.load(s)
 
-os.environ['WANDB_API_KEY'] = secrets['WANDB_API_KEY']
+# os.environ['WANDB_API_KEY'] = secrets['WANDB_API_KEY']
 
 ANNOTATIONS_FILE = "data/train_annotations_updated.json"
-img_dir = os.path.join(os.getenv("HPCVAULT"), "TCD/data/train")
+img_dir = "data/train"
 
 train_augments = A.Compose([
     A.HorizontalFlip(p=0.5),
@@ -61,35 +61,41 @@ val_augments = A.Compose([
 train_ds_aug = TCDDataset(
     img_dir=img_dir,
     ann_file=ANNOTATIONS_FILE,
-    augments=train_augments
+    augments=train_augments,
+    target_gsd=20.0,
+    crop_size=512
 )
 train_ds_eval = TCDDataset(
     img_dir=img_dir,
     ann_file=ANNOTATIONS_FILE,
-    augments=val_augments
+    augments=val_augments,
+    target_gsd=20.0,
+    crop_size=512
 )
 val_ds_eval = TCDDataset(
     img_dir=img_dir,
     ann_file=ANNOTATIONS_FILE,
-    augments=val_augments
+    augments=val_augments,
+    target_gsd=20.0,
+    crop_size=512
 )
 
 train_idx, val_idx = train_test_split(range(150), train_size=0.8, shuffle=True, random_state=42)
 
-train_dataset = Subset(train_ds_aug,  train_idx)
-train_dataset_eval = Subset(train_ds_eval, train_idx[:30])
-val_dataset = Subset(val_ds_eval,   val_idx)
+train_dataset = Subset(train_ds_aug, train_idx)
+train_dataset_eval = Subset(train_ds_eval, train_idx[:15])
+val_dataset = Subset(val_ds_eval, val_idx)
 
 print(f"Train: {len(train_dataset)} | Train-eval: {len(train_dataset_eval)} | Val: {len(val_dataset)}")
 
 BATCH_SIZE = 2
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=6, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-train_loader_eval = DataLoader(train_dataset_eval, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+train_loader_eval = DataLoader(train_dataset_eval, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
 num_classes = 3
 last_level = "LastLevelMaxPool"
-model_name = "convnext_large.dinov3_lvd1689m"
+model_name = "convnext_small.dinov3_lvd1689m"
 backbone = CustomBackbone(model_name, False)
 
 fpn = CustomFPN(backbone.in_channels_list, 256, backbone.feature_module_names, last_level=last_level)
@@ -151,8 +157,8 @@ in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
 hidden_layer = 256
 model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
 
-EXP_NAME = "Mask_RCNN_Run_1_with_rotate90"
-save_dir = os.path.join(os.getenv("HPCVAULT"), f"TCD/{EXP_NAME}")
+EXP_NAME = "Mask_RCNN_Run_2"
+save_dir = "models/" + EXP_NAME
 
 os.makedirs(save_dir, exist_ok=True)
 
@@ -187,20 +193,20 @@ lr_sched = torch.optim.lr_scheduler.SequentialLR(
 scaler = GradScaler('cuda') if device.type == 'cuda' else None
 clip = 5
 
-wandb.init(
-    project=f"tcd-experiments-1",
-    name=f"{model_name}-{EXP_NAME}_with_rotate90",
-    config={
-        "batch_size": BATCH_SIZE,
-        "architecture": model_name,
-        "epochs": num_epochs,
-        "max_dets": MAX_DETS,
-        "Exp": EXP_NAME,
-        "last_level": last_level,
-        "augmentations": aug_config,
-        "accumulation_steps": accumulation_steps
-    }
-)
+# wandb.init(
+#     project=f"tcd-experiments-1",
+#     name=f"{model_name}-{EXP_NAME}_with_rotate90",
+#     config={
+#         "batch_size": BATCH_SIZE,
+#         "architecture": model_name,
+#         "epochs": num_epochs,
+#         "max_dets": MAX_DETS,
+#         "Exp": EXP_NAME,
+#         "last_level": last_level,
+#         "augmentations": aug_config,
+#         "accumulation_steps": accumulation_steps
+#     }
+# )
 
 for epoch in range(num_epochs):
     start_in = time.time()
@@ -257,7 +263,7 @@ for epoch in range(num_epochs):
         val = v.item() if isinstance(v, torch.Tensor) and v.numel() == 1 else v.tolist()
         log_data[f"val_{k}"] = val
 
-    wandb.log(log_data)
+    # wandb.log(log_data)
 
     model_name = f"maskrcnn_epoch_{epoch+1}.pth"
     save_path = os.path.join(save_dir, model_name)

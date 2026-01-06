@@ -78,9 +78,20 @@ class TCDDataset(Dataset):
             labels.append(id_to_label[oid])
 
         if self.augments:
-            augmented = self.augments(image=img, masks=masks, class_labels=labels)
+            if len(masks) == 0:
+                masks_np = np.zeros((0, img.shape[0], img.shape[1]), dtype=np.uint8)
+            else:
+                masks_np = np.stack(masks, axis=0).astype(np.uint8)
+
+            augmented = self.augments(
+                image=img,
+                masks=masks_np,
+                class_labels=labels
+            )
+
             img = augmented["image"]
-            masks = augmented["masks"]
+            masks = augmented["masks"]   # now a NumPy array (N, H, W)
+
 
         masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
         labels = torch.as_tensor(labels, dtype=torch.int64)
