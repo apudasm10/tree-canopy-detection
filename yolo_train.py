@@ -46,7 +46,7 @@ with open(os.path.join(dataset_root, "dataset.yaml"), "w") as f:
 
 print("YOLO dataset preparation complete.")
 
-model_name = "yolov11s-seg.pt"
+model_name = "yolo11s-seg.pt"
 model = YOLO(model_name)
 
 aerial_augments = [
