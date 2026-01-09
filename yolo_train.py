@@ -2,6 +2,7 @@ import os
 import json
 import yaml
 import wandb
+import albumentations as A
 from src.yolo_preprocessing import process_dataset_to_yolo, train_val_split
 
 with open("./../api-keys.json") as s:
@@ -45,19 +46,39 @@ with open(os.path.join(dataset_root, "dataset.yaml"), "w") as f:
 
 print("YOLO dataset preparation complete.")
 
-model = YOLO("yolov11s-seg.pt")
+model_name = "yolov11s-seg.pt"
+model = YOLO(model_name)
+
+aerial_augments = [
+    A.RandomRotate90(p=0.5),
+
+    A.RandomShadow(
+        num_shadows_lower=1, 
+        num_shadows_upper=3, 
+        shadow_dimension=5, 
+        shadow_roi=(0, 0, 1, 1), 
+        p=0.3
+    ),
+
+    A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.4),
+    
+    A.OneOf([
+        A.MotionBlur(blur_limit=5, p=0.5),
+        A.GaussNoise(var_limit=(10.0, 50.0), p=0.5)
+    ], p=0.2)
+]
 
 results = model.train(
     data=os.path.join(dataset_root, "dataset.yaml"),
     project="yolo_tree_canopy_detection",
-    name="yolov11s-seg_experiment_1",
+    name=model_name.replace(".pt", "_experiment")+"_v1",
 
     device=0,
     workers=2,
     batch=16,
 
     epochs=100,
-    patience=10,
+    patience=12,
     save=True,
     save_period=5,
 
@@ -72,13 +93,15 @@ results = model.train(
     overlap_mask=True,
     mask_ratio=1,
 
+    augmentations=aerial_augments,
+
     hsv_h=0.015,
     hsv_s=0.6,
     hsv_v=0.4,
 
     flipud=0.5,
     fliplr=0.5,
-    degrees=90.0,
+    degrees=45.0,
     translate=0.15,
     scale=0.15,
 
