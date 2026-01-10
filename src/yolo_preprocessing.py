@@ -2,9 +2,10 @@ import os
 import shutil
 from tqdm import tqdm
 import json
+import pandas as pd
 from sklearn.model_selection import train_test_split
 
-def process_dataset_to_yolo(img_dir, ann_file, output_dir, out_file="all_train.txt", over_sample=True, copy=True):
+def process_dataset_to_yolo(img_dir, ann_file, output_dir, gsd_weight, out_file="all_train.txt", over_sample=True, copy=True):
     dest_labels_dir = os.path.join(output_dir, "labels", "train")
     dest_images_dir = os.path.join(output_dir, "images", "train")
 
@@ -17,8 +18,6 @@ def process_dataset_to_yolo(img_dir, ann_file, output_dir, out_file="all_train.t
         data = json.load(f)
 
     class_map = {"individual_tree": 0, "group_of_trees": 1}
-    gsd_ratios = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
-
     all_yolo_lines = []
 
     images_list = data.get('images', [])
@@ -66,7 +65,7 @@ def process_dataset_to_yolo(img_dir, ann_file, output_dir, out_file="all_train.t
         # --- Add to train file ---
         repeat_count = 1
         if over_sample:
-            repeat_count = gsd_ratios.get(file_name[:2], 1)
+            repeat_count = gsd_weight.get(file_name[:2], 1)
 
         abs_path = os.path.abspath(final_image_path)
 
@@ -110,3 +109,53 @@ def train_val_split(all_train_file, val_size=0.2, output_train_file="train_final
         f.write("\n".join(final_val))
 
     return final_train, final_val
+
+
+def prepare_classification_data(source_dir, dest_dir, json_path, weights, val_size=0.2, stratify=True):
+    """Parses JSON labels and organizes images into YOLO structure using os."""
+    
+    train_check = os.path.join(dest_dir, 'train')
+    if os.path.exists(train_check) and len(os.listdir(train_check)) > 0:
+        print(f"Data exists in {dest_dir}. Skipping.")
+        return
+
+    print(f"Reading labels from {json_path}...")
+    with open(json_path) as f:
+        data = json.load(f)
+    
+    df = pd.DataFrame([
+        {'filename': item['file_name'], 'label': item['scene_type']} 
+        for item in data['images']
+    ])
+
+    print(f"Splitting data (Stratify={stratify})...")
+    strat_col = df['label'] if stratify else None
+    train_df, val_df = train_test_split(df, test_size=val_size, stratify=strat_col, random_state=42)
+
+    for split, subset in [('train', train_df), ('val', val_df)]:
+        for _, row in tqdm(subset.iterrows(), total=len(subset), desc=f"Processing {split}"):
+            label = row['label']
+            
+            target_dir = os.path.join(dest_dir, split, label)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            src = os.path.join(source_dir, row['filename'])
+            
+            if not os.path.exists(src):
+                continue
+            
+            num_copies = 1
+            if split == 'train':
+                num_copies = int(weights.get(label, 1))
+            
+            for i in range(num_copies):
+                # Unique name for duplicates: "img.tif", "copy_1_img.tif"
+                new_name = row['filename'] if i == 0 else f"copy_{i}_{row['filename']}"
+                dst = os.path.join(target_dir, new_name)
+                
+                shutil.copy2(src, dst)
+
+    print("\nDone! Dataset Stats:")
+    for split in ['train', 'val']:
+        count = sum([len(files) for r, d, files in os.walk(os.path.join(dest_dir, split))])
+        print(f" - {split.upper()}: {count} images total.")

@@ -16,14 +16,16 @@ from ultralytics import YOLO, settings
 settings.update({"wandb": True})
 
 
-source_img_dir = r"/kaggle/input/tree-canpy-detection/train"
+source_img_dir = r"/kaggle/input/tree-canopy-detection/train"
 source_ann_file = r"/kaggle/input/tree-canpy-detection/train_annotations_updated.json"
 dataset_root = r"/kaggle/working/yolo_data_v1"
+gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
 
 process_dataset_to_yolo(
     img_dir=source_img_dir,
     ann_file=source_ann_file,
     output_dir=dataset_root,
+    gsd_weight=gsd_weight,
     out_file="all_train.txt",
     over_sample=True,
     copy=True
@@ -51,20 +53,22 @@ model = YOLO(model_name)
 
 aerial_augments = [
     A.RandomRotate90(p=0.5),
-
     A.RandomShadow(
-        num_shadows_lower=1, 
-        num_shadows_upper=3, 
-        shadow_dimension=5, 
-        shadow_roi=(0, 0, 1, 1), 
+        shadow_roi=[0, 0, 1, 1],
+        num_shadows_limit=[1, 3],
+        shadow_dimension=5,
+        shadow_intensity_range=[0.2, 0.8],
         p=0.3
     ),
-
     A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.4),
-    
     A.OneOf([
         A.MotionBlur(blur_limit=5, p=0.5),
-        A.GaussNoise(var_limit=(10.0, 50.0), p=0.5)
+        A.GaussNoise(
+            std_range=[0.05, 0.1],
+            mean_range=[0, 0],
+            per_channel=True,
+            noise_scale_factor=1,
+            p=0.5)
     ], p=0.2)
 ]
 
