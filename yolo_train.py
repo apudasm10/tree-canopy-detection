@@ -16,9 +16,10 @@ from ultralytics import YOLO, settings
 settings.update({"wandb": True})
 
 
-source_img_dir = r"/kaggle/input/tree-canopy-detection/train"
-source_ann_file = r"/kaggle/input/tree-canpy-detection/train_annotations_updated.json"
-dataset_root = r"/kaggle/working/yolo_data_v1"
+source_img_dir = r"tree-canopy-detection\train"
+source_ann_file = r"tree-canopy-detection\train_annotations_updated.json"
+dataset_root = r"yolo_data_v1"
+out_file = "all_train.txt"
 gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
 
 process_dataset_to_yolo(
@@ -26,7 +27,7 @@ process_dataset_to_yolo(
     ann_file=source_ann_file,
     output_dir=dataset_root,
     gsd_weight=gsd_weight,
-    out_file="all_train.txt",
+    out_file=out_file,
     over_sample=True,
     copy=True
 )

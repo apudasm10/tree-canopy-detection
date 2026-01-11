@@ -28,7 +28,6 @@ def process_dataset_to_yolo(img_dir, ann_file, output_dir, gsd_weight, out_file=
         width = item['width']
         height = item['height']
 
-        # --- Create YOLO Labels ---
         current_image_labels = []
 
         for ann in item.get('annotations', []):
@@ -46,13 +45,11 @@ def process_dataset_to_yolo(img_dir, ann_file, output_dir, gsd_weight, out_file=
 
             current_image_labels.append(f"{class_id} {' '.join(norm_coords)}")
 
-        # Save .txt label
         txt_name = os.path.splitext(file_name)[0] + ".txt"
         with open(os.path.join(dest_labels_dir, txt_name), "w") as f:
             if current_image_labels:
                 f.write("\n".join(current_image_labels))
 
-        # --- Copy Image ---
         src_image_path = os.path.join(img_dir, file_name)
 
         if copy:
@@ -62,7 +59,6 @@ def process_dataset_to_yolo(img_dir, ann_file, output_dir, gsd_weight, out_file=
         else:
             final_image_path = src_image_path
 
-        # --- Add to train file ---
         repeat_count = 1
         if over_sample:
             repeat_count = gsd_weight.get(file_name[:2], 1)
