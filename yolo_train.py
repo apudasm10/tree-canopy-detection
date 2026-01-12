@@ -49,7 +49,7 @@ with open(os.path.join(dataset_root, "dataset.yaml"), "w") as f:
 
 print("YOLO dataset preparation complete.")
 
-model_name = "yolo11s-seg.pt"
+model_name = "yolo11l-seg.pt"
 model = YOLO(model_name)
 
 aerial_augments = [
@@ -61,15 +61,15 @@ aerial_augments = [
         shadow_intensity_range=[0.2, 0.8],
         p=0.3
     ),
-    A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.4),
+    A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
     A.OneOf([
-        A.MotionBlur(blur_limit=5, p=0.5),
+        A.MotionBlur(blur_limit=5, p=0.3),
         A.GaussNoise(
             std_range=[0.05, 0.1],
             mean_range=[0, 0],
             per_channel=True,
             noise_scale_factor=1,
-            p=0.5)
+            p=0.3)
     ], p=0.2)
 ]
 

@@ -5,23 +5,23 @@ import yaml
 import wandb
 import albumentations as A
 import pandas as pd
-from src.yolo_preprocessing import process_dataset_to_yolo, train_val_split
+from src.yolo_preprocessing import process_dataset_to_yolo
 from sklearn.model_selection import StratifiedKFold
 
-# with open("api-keys.json") as s:
-#     secrets = json.load(s)
+with open("api-keys.json") as s:
+    secrets = json.load(s)
 
-# os.environ['WANDB_API_KEY'] = secrets['WANDB_API_KEY']
+os.environ['WANDB_API_KEY'] = secrets['WANDB_API_KEY']
 
-# wandb.login(key=secrets['WANDB_API_KEY'])
+wandb.login(key=secrets['WANDB_API_KEY'])
 
 from ultralytics import YOLO, settings
-# settings.update({"wandb": True})
+settings.update({"wandb": True})
 
 
-source_img_dir = r"tree-canopy-detection\train"
-source_ann_file = r"tree-canopy-detection\train_annotations_updated.json"
-dataset_root = r"yolo_data_v2"
+source_img_dir = os.path.join("tree-canopy-detection", "train")
+source_ann_file = os.path.join("tree-canopy-detection", "train_annotations_updated.json")
+dataset_root = "yolo_data_v1"
 out_file = "all_train.txt"
 gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
 
@@ -91,23 +91,78 @@ for fold_idx, (train_idx, val_idx) in enumerate(kfolds):
 
 print("YOLO dataset preparation complete.")
 
-model_name = "yolo11s-seg.pt"
+model_name = "yolo11l-seg.pt"
+
+aerial_augments = [
+    A.RandomRotate90(p=0.4),
+    A.RandomShadow(
+        shadow_roi=[0, 0, 1, 1],
+        num_shadows_limit=[1, 3],
+        shadow_dimension=5,
+        shadow_intensity_range=[0.2, 0.6],
+        p=0.2
+    ),
+    A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.25),
+    A.OneOf([
+        A.MotionBlur(blur_limit=5, p=0.15),
+        A.GaussNoise(
+            std_range=[0.01, 0.03],
+            mean_range=[0, 0],
+            per_channel=True,
+            noise_scale_factor=1,
+            p=0.25)
+    ], p=0.2)
+]
 
 for fold_idx, yaml_path in enumerate(yamls):
-    print(f"\n🚩 Training fold {fold_idx + 1}/{ksplit} with data config: {yaml_path}")
+    print(f"\nTraining fold {fold_idx + 1}/{ksplit} with data config: {yaml_path}")
     model = YOLO(model_name)
+    project="TCD_YOLO_KFOLD",
+    run_name = f"yolo11l-seg-fold{fold_idx+1}-v1"
 
-    run_name = f"yolo11s-seg-fold{fold_idx+1}-v2"
-    
     results = model.train(
-    data=yaml_path,
-    project="yolo_tree_canopy_kfold",
-    name=run_name,
+        data=yaml_path,
+        project="yolo_tree_canopy_kfold",
+        name=run_name,
 
-    device="cpu",
-    workers=1,
-    batch=1,
+        device=0,
+        workers=8,
+        batch=16,
 
-    epochs=1, # checking that everything works
-    imgsz=640
-)
+        epochs=100,
+        patience=20,
+        save=True,
+        save_period=5,
+
+        imgsz=1024,
+        cache=True,
+
+        optimizer="AdamW",
+        lr0=0.0005,
+        lrf=0.1,
+        cos_lr=True,
+        warmup_epochs=5,
+
+        overlap_mask=True,
+        mask_ratio=1,
+
+        augmentations=aerial_augments,
+
+        hsv_h=0.015,
+        hsv_s=0.6,
+        hsv_v=0.4,
+
+        flipud=0.5,
+        fliplr=0.5,
+        degrees=45.0,
+        translate=0.1,
+        scale=0.15,
+
+        mosaic=0.5,
+        close_mosaic=15,
+        mixup=0.05,
+        copy_paste=0.15
+    )
+
+print("Training complete.")
+print("Results:", results)
