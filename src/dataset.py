@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 import cv2
 from torchvision.ops import masks_to_boxes
 import albumentations as A
+import pandas as pd
 
 
 class TCDDataset(Dataset):
@@ -126,3 +127,41 @@ class TCDDataset(Dataset):
 
 def collate_fn(batch):
     return tuple(zip(*batch))
+
+
+class TCDClassification(Dataset):
+    def __init__(self, img_dir, ann_file, augments):
+        self.img_dir = img_dir
+        self.augments = augments
+        self.label2int = {
+            "agriculture_plantation": 0,
+            "urban_area": 1,
+            "industrial_area": 2,
+            "rural_area": 3,
+            "open_field": 4
+        }
+
+        with open(ann_file, "r") as f:
+            data = json.load(f)
+    
+        self.data = pd.DataFrame([
+            {'filename': item['file_name'], 'label': item['scene_type']} 
+            for item in data['images']])
+        
+        print("Class counts:", self.data['label'].value_counts().to_dict())
+        
+        self.targets = [self.label2int[x] for x in self.data['label']]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        sample = self.data.iloc[idx]
+        img_path = os.path.join(self.img_dir, sample['filename'])
+        img = Image.open(img_path).convert("RGB")
+        label = self.label2int.get(sample['label'], 0)
+
+        if self.augments:
+            img = self.augments(img)
+
+        return img, label

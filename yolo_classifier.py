@@ -26,7 +26,7 @@ weights = {
 
 prepare_classification_data(source_dir, dest_dir, json_path, weights, val_size=0.2, stratify=True)
 
-model_name = "yolo11m-cls.pt"
+model_name = "yolo11x-cls.pt"
 model = YOLO(model_name)
 
 results = model.train(
@@ -41,7 +41,7 @@ results = model.train(
     epochs=50,
     patience=10,
     batch=16,
-    imgsz=384,
+    imgsz=224,
     
     optimizer="AdamW",
     lr0=0.001,

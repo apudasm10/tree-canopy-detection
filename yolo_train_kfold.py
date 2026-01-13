@@ -95,46 +95,30 @@ model_name = "yolo11l-seg.pt"
 
 aerial_augments = [
     A.RandomRotate90(p=0.4),
-    A.RandomShadow(
-        shadow_roi=[0, 0, 1, 1],
-        num_shadows_limit=[1, 3],
-        shadow_dimension=5,
-        shadow_intensity_range=[0.2, 0.6],
-        p=0.2
-    ),
-    A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.25),
-    A.OneOf([
-        A.MotionBlur(blur_limit=5, p=0.15),
-        A.GaussNoise(
-            std_range=[0.01, 0.03],
-            mean_range=[0, 0],
-            per_channel=True,
-            noise_scale_factor=1,
-            p=0.25)
-    ], p=0.2)
+    A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.25)
 ]
 
 for fold_idx, yaml_path in enumerate(yamls):
     print(f"\nTraining fold {fold_idx + 1}/{ksplit} with data config: {yaml_path}")
     model = YOLO(model_name)
-    project="TCD_YOLO_KFOLD",
+    project="TCD_YOLO_KFOLD"
     run_name = f"yolo11l-seg-fold{fold_idx+1}-v1"
 
     results = model.train(
         data=yaml_path,
-        project="yolo_tree_canopy_kfold",
+        project=project,
         name=run_name,
 
         device=0,
-        workers=8,
-        batch=16,
+        workers=4,
+        batch=4,
 
         epochs=100,
         patience=20,
         save=True,
-        save_period=5,
+        save_period=0,
 
-        imgsz=1024,
+        imgsz=896,
         cache=True,
 
         optimizer="AdamW",
@@ -155,12 +139,10 @@ for fold_idx, yaml_path in enumerate(yamls):
         flipud=0.5,
         fliplr=0.5,
         degrees=45.0,
-        translate=0.1,
         scale=0.15,
 
         mosaic=0.5,
         close_mosaic=15,
-        mixup=0.05,
         copy_paste=0.15
     )
 
