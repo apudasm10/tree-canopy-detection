@@ -4,8 +4,10 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torchvision.transforms as transforms
+import torch
 import os
 import math
+import supervision as sv
 
 
 def generate_mask(item):
@@ -86,3 +88,26 @@ def padded_img(image_path, target_gsd=20.0, crop_size=512, stride_pixels=384):
     img_padded = cv2.copyMakeBorder(img, 0, pad_bottom, 0, pad_right, cv2.BORDER_CONSTANT, value=[0,0,0])
 
     return img_padded
+
+def combine_with_nms(detections_list, iou_threshold=0.45, class_agnostic=True):
+    combined = sv.Detections.merge(detections_list)
+    combined_nms = combined.with_nms(threshold=iou_threshold, class_agnostic=class_agnostic)
+    
+    return combined_nms
+
+def get_class(models, image, transform, class_names, device='cpu'):
+    img_transformed = transform(image).unsqueeze(0).to(device)
+
+    ensemble_probs = []
+    for model in models:
+        model.eval()
+        with torch.no_grad():
+            outputs = model(img_transformed)
+            probs = torch.softmax(outputs, dim=1)
+            ensemble_probs.append(probs)
+
+    avg_probs = torch.stack(ensemble_probs).mean(dim=0)
+    _, predicted_class = avg_probs.max(1)
+    predicted_class_name = class_names[predicted_class.item()]
+
+    return predicted_class_name
