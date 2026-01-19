@@ -1,14 +1,9 @@
-import gc
 import os
 import json
-import torch
 import yaml
 import wandb
-from src.yolo_preprocessing import process_dataset_to_yolo_v2, train_val_split
 import albumentations as A
-
-gc.collect()
-torch.cuda.empty_cache()
+from src.yolo_preprocessing import process_dataset_to_yolo_v2, train_val_split
 
 with open("api-keys.json") as s:
     secrets = json.load(s)
@@ -20,12 +15,12 @@ wandb.login(key=secrets['WANDB_API_KEY'])
 from ultralytics import YOLO, settings
 settings.update({"wandb": True})
 
-random_state = 64
-source_img_dir = os.path.join("tree-canopy-detection", "train")
-source_ann_file = os.path.join("tree-canopy-detection", "train_annotations_updated.json")
-dataset_root = "yolo_data_v1"
+
+source_img_dir = r"tree-canopy-detection\train"
+source_ann_file = r"tree-canopy-detection\train_annotations_updated.json"
+dataset_root = r"yolo_data_v1"
 out_file = "all_train.txt"
-gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 2, "80": 2}
+gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
 
 process_dataset_to_yolo_v2(
     img_dir=source_img_dir,
@@ -42,57 +37,68 @@ output_train_file = os.path.join(dataset_root, "train_final.txt")
 output_val_file = os.path.join(dataset_root, "val_final.txt")
 
 # Perform train-validation split and save to separate files
-final_train, final_val = train_val_split(all_train_file, val_size=0.2, random_state=random_state, output_train_file=output_train_file, output_val_file=output_val_file)
+final_train, final_val = train_val_split(all_train_file, val_size=0.2, output_train_file=output_train_file, output_val_file=output_val_file)
 
 yolo_yaml = {'path': dataset_root,
-             'train': os.path.basename(output_train_file),
-             'val': os.path.basename(output_val_file),
+             'train': output_train_file,
+             'val': output_val_file,
              'names': {0: 'individual_tree', 1: 'group_of_trees'}}
 
 with open(os.path.join(dataset_root, "dataset.yaml"), "w") as f:
     yaml.safe_dump(yolo_yaml, f)
 
 print("YOLO dataset preparation complete.")
+exit()
+model_name = "yolo11l-seg.pt"
+model = YOLO(model_name)
 
 aerial_augments = [
-    A.RandomRotate90(p=0.3),
-    A.Blur(blur_limit=(3, 7), p=0.07),
-    A.MedianBlur(blur_limit=(3, 7), p=0.07),
-    A.ToGray(p=0.01),
-    A.CLAHE(
-        clip_limit=(1.0, 3.0), 
-        tile_grid_size=(8, 8), 
-        p=0.07
-    )
+    A.RandomRotate90(p=0.5),
+    A.RandomShadow(
+        shadow_roi=[0, 0, 1, 1],
+        num_shadows_limit=[1, 3],
+        shadow_dimension=5,
+        shadow_intensity_range=[0.2, 0.8],
+        p=0.3
+    ),
+    A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
+    A.OneOf([
+        A.MotionBlur(blur_limit=5, p=0.3),
+        A.GaussNoise(
+            std_range=[0.05, 0.1],
+            mean_range=[0, 0],
+            per_channel=True,
+            noise_scale_factor=1,
+            p=0.3)
+    ], p=0.2)
 ]
-
-# model_name = "yolov8m-p2.yaml"
-model_name = "yolov8x.pt"
-model = YOLO(model_name)
 
 results = model.train(
     data=os.path.join(dataset_root, "dataset.yaml"),
-    project="GCP_TCD",
-    name=model_name.replace(".pt", "_exp")+str(random_state),
+    project="yolo_tree_canopy_detection",
+    name=model_name.replace(".pt", "_experiment")+"_v1",
 
     device=0,
-    workers=4,
-    batch=8,
+    workers=2,
+    batch=16,
 
-    epochs=200,
-    patience=40,
+    epochs=100,
+    patience=12,
     save=True,
-    save_period=0,
+    save_period=5,
 
-    imgsz=1024,
+    imgsz=640,
 
-    optimizer="SGD",
-    lr0=0.001,
-    lrf=0.05,
+    optimizer="AdamW",
+    lr0=0.0005,
+    lrf=0.1,
     cos_lr=True,
     warmup_epochs=5,
-    nbs=16,
-    erasing=0.0,
+
+    overlap_mask=True,
+    mask_ratio=1,
+
+    augmentations=aerial_augments,
 
     hsv_h=0.015,
     hsv_s=0.6,
@@ -100,19 +106,15 @@ results = model.train(
 
     flipud=0.5,
     fliplr=0.5,
-    degrees=90.0,
+    degrees=45.0,
+    translate=0.15,
     scale=0.15,
 
-    augmentations=aerial_augments,
-
-    mosaic=0.1,
-    close_mosaic=15,
-
-    max_det=2000
+    mosaic=0.7,
+    close_mosaic=10,
+    mixup=0.15,
+    copy_paste=0.3
 )
-
-gc.collect()
-torch.cuda.empty_cache()
 
 print("Training complete.")
 print("Results:", results)
