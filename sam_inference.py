@@ -13,14 +13,15 @@ import gc
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ID_TO_CLASS = {0: "individual_tree", 1: "group_of_trees"}
 NUM_CLASSES = 5
-IMG_DIR = 'tree-canopy-detection/val'
+# IMG_DIR = 'tree-canopy-detection/val'
+IMG_DIR = os.path.join(os.getenv("HPCVAULT"), "TCD", "data", "val")
+print("IMG_DIR:", IMG_DIR)
 CLASS_NAMES = ["agriculture_plantation", "urban_area", "industrial_area", "rural_area", "open_field"]
 output_json = 'submission_staged3.json'
 
 pipeline_data = {}
 all_img_names = sorted(os.listdir(IMG_DIR))
 
-# Initialize pipeline storage
 for name in all_img_names:
     pipeline_data[name] = {"scene": None, "boxes": None}
 
@@ -69,7 +70,7 @@ clear_gpu()
 print("\n--- STAGE 2: YOLO BOX DETECTION ---")
 clear_gpu()
 
-yolo_model_paths = ['GCP_TCD/yolov8x_exp32/weights/best.pt', 'GCP_TCD/yolo11l_exp44/weights/best.pt']
+yolo_model_paths = ['YOLO_models/yolov8x_exp32/weights/best.pt', 'YOLO_models/yolo11l_exp44/weights/best.pt']
 yolo_models = [YOLO(path) for path in yolo_model_paths]
 
 for img_name in tqdm(all_img_names, desc="Detecting Boxes"):
@@ -77,7 +78,7 @@ for img_name in tqdm(all_img_names, desc="Detecting Boxes"):
     
     all_detections = []
     for model in yolo_models:
-        results = model.predict(source=img_path, imgsz=1024, conf=0.25, max_det=2000, verbose=False)
+        results = model.predict(source=img_path, imgsz=1024, conf=0.25, max_det=2000, augment=True, verbose=False)
         detections = sv.Detections.from_ultralytics(results[0])
         all_detections.append(detections)
 
