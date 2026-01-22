@@ -10,7 +10,7 @@ import albumentations as A
 gc.collect()
 torch.cuda.empty_cache()
 
-with open("api-keys.json") as s:
+with open("./../api-keys.json") as s:
     secrets = json.load(s)
 
 os.environ['WANDB_API_KEY'] = secrets['WANDB_API_KEY']
@@ -20,12 +20,12 @@ wandb.login(key=secrets['WANDB_API_KEY'])
 from ultralytics import YOLO, settings
 settings.update({"wandb": True})
 
-random_state = 64
-source_img_dir = os.path.join("tree-canopy-detection", "train")
-source_ann_file = os.path.join("tree-canopy-detection", "train_annotations_updated.json")
+random_state = 50
+source_img_dir = os.path.join(os.getenv("HPCVAULT"), "TCD", "data", "train")
+source_ann_file = os.path.join("data", "train_annotations_updated.json")
 dataset_root = "yolo_data_v1"
 out_file = "all_train.txt"
-gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 2, "80": 2}
+gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
 
 process_dataset_to_yolo_v2(
     img_dir=source_img_dir,
@@ -58,25 +58,26 @@ aerial_augments = [
     A.RandomRotate90(p=0.3),
     A.Blur(blur_limit=(3, 7), p=0.07),
     A.MedianBlur(blur_limit=(3, 7), p=0.07),
-    A.ToGray(p=0.01),
+    # A.ToGray(p=0.01),
     A.CLAHE(
         clip_limit=(1.0, 3.0), 
         tile_grid_size=(8, 8), 
-        p=0.07
+        p=0.05
     )
 ]
 
 # model_name = "yolov8m-p2.yaml"
-model_name = "yolov8x.pt"
+model_name = "yolo11l.pt"
 model = YOLO(model_name)
+imgsz = 1184
 
 results = model.train(
     data=os.path.join(dataset_root, "dataset.yaml"),
-    project="GCP_TCD",
-    name=model_name.replace(".pt", "_exp")+str(random_state),
+    project="HPC_TCD_GSD_Normalized",
+    name=model_name.replace(".pt", f"_sz-{imgsz}_").replace(".yaml", f"_sz-{imgsz}_") + str(random_state),
 
     device=0,
-    workers=4,
+    workers=16,
     batch=8,
 
     epochs=200,
@@ -84,31 +85,36 @@ results = model.train(
     save=True,
     save_period=0,
 
-    imgsz=1024,
+    imgsz=imgsz,
 
     optimizer="SGD",
-    lr0=0.001,
-    lrf=0.05,
+    lr0=0.005,
+    lrf=0.01,
     cos_lr=True,
     warmup_epochs=5,
     nbs=16,
     erasing=0.0,
 
     hsv_h=0.015,
-    hsv_s=0.6,
-    hsv_v=0.4,
+    hsv_s=0.7,
+    hsv_v=0.2,
 
     flipud=0.5,
     fliplr=0.5,
     degrees=90.0,
     scale=0.15,
+    translate=0.05,
 
     augmentations=aerial_augments,
 
     mosaic=0.1,
     close_mosaic=15,
 
-    max_det=2000
+    max_det=2200,
+
+    box=9.0,
+    # cls=0.8,
+    # dfl=2.5,
 )
 
 gc.collect()
