@@ -23,9 +23,9 @@ settings.update({"wandb": True})
 random_state = 50
 source_img_dir = os.path.join(os.getenv("HPCVAULT"), "TCD", "data", "train")
 source_ann_file = os.path.join("data", "train_annotations_updated.json")
-dataset_root = "yolo_data_v1"
+dataset_root = "yolo_data_v2"
 out_file = "all_train.txt"
-gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 3, "80": 3}
+gsd_weight = {"10": 1, "20": 1, "40": 2, "60": 2, "80": 2}
 
 process_dataset_to_yolo_v2(
     img_dir=source_img_dir,
@@ -54,6 +54,7 @@ with open(os.path.join(dataset_root, "dataset.yaml"), "w") as f:
 
 print("YOLO dataset preparation complete.")
 
+exit()
 aerial_augments = [
     A.RandomRotate90(p=0.3),
     A.Blur(blur_limit=(3, 7), p=0.07),
@@ -112,7 +113,7 @@ results = model.train(
 
     max_det=2200,
 
-    box=9.0,
+    box=10.0,
     # cls=0.8,
     # dfl=2.5,
 )

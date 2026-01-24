@@ -8,6 +8,7 @@ import torch
 import os
 import math
 import supervision as sv
+from ensemble_boxes import weighted_boxes_fusion
 
 
 def generate_mask(item):
@@ -111,3 +112,60 @@ def get_class(models, image, transform, class_names, device='cpu'):
     predicted_class_name = class_names[predicted_class.item()]
 
     return predicted_class_name
+
+def sahi_to_sv_detections(sahi_result):
+    boxes = []
+    confidences = []
+    class_ids = []
+
+    for pred in sahi_result.object_prediction_list:
+        boxes.append(pred.bbox.to_xyxy()) 
+        confidences.append(pred.score.value)
+        class_ids.append(pred.category.id)
+    
+    if len(boxes) == 0:
+        return sv.Detections.empty()
+    
+    return sv.Detections(
+        xyxy=np.array(boxes),
+        confidence=np.array(confidences),
+        class_id=np.array(class_ids).astype(int)
+    )
+
+def run_wbf(detections_list, image_shape, iou_thr=0.55, skip_box_thr=0.0):
+    """
+    Merges multiple Supervision Detections objects using WBF.
+    """
+    H, W = image_shape
+    boxes_list = []
+    scores_list = []
+    labels_list = []
+    
+    for dets in detections_list:
+        if len(dets) == 0: continue
+            
+        boxes_norm = dets.xyxy.copy().astype(float)
+        boxes_norm[:, [0, 2]] /= W
+        boxes_norm[:, [1, 3]] /= H
+        
+        boxes_list.append(boxes_norm.tolist())
+        scores_list.append(dets.confidence.tolist())
+        labels_list.append(dets.class_id.tolist())
+    
+    if not boxes_list:
+        return sv.Detections.empty()
+
+    boxes, scores, labels = weighted_boxes_fusion(
+        boxes_list, scores_list, labels_list, weights=None, iou_thr=iou_thr, skip_box_thr=skip_box_thr
+    )
+
+    if len(boxes) > 0:
+        boxes[:, [0, 2]] *= W
+        boxes[:, [1, 3]] *= H
+        return sv.Detections(
+            xyxy=boxes,
+            confidence=np.array(scores),
+            class_id=np.array(labels).astype(int)
+        )
+    else:
+        return sv.Detections.empty()

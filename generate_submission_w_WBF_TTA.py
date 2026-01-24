@@ -5,19 +5,18 @@ from ultralytics import YOLO, SAM
 from torchvision import transforms
 from torchvision.models import convnext_small, ConvNeXt_Small_Weights
 from PIL import Image
-from src.utils import combine_with_nms, get_class
+from src.utils import get_class
 from tqdm import tqdm
-import numpy as np
 import gc
+from src.utils import run_wbf
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ID_TO_CLASS = {0: "individual_tree", 1: "group_of_trees"}
 NUM_CLASSES = 5
-# IMG_DIR = 'tree-canopy-detection/val'
 IMG_DIR = os.path.join(os.getenv("HPCVAULT"), "TCD", "data", "val")
 print("IMG_DIR:", IMG_DIR)
 CLASS_NAMES = ["agriculture_plantation", "urban_area", "industrial_area", "rural_area", "open_field"]
-output_json = 'submission_staged3.json'
+output_json = 'wbf_tta_1216-2.json'
 
 pipeline_data = {}
 all_img_names = sorted(os.listdir(IMG_DIR))
@@ -29,7 +28,9 @@ def clear_gpu():
     gc.collect()
     torch.cuda.empty_cache()
 
-
+# ==============================================================================
+# STAGE 1: SCENE CLASSIFICATION
+# ==============================================================================
 print("\n--- STAGE 1: SCENE CLASSIFICATION ---")
 clear_gpu()
 
@@ -66,7 +67,9 @@ del classifier_models
 del transform
 clear_gpu()
 
-
+# ==============================================================================
+# STAGE 2: YOLO BOX DETECTION (Using WBF)
+# ==============================================================================
 print("\n--- STAGE 2: YOLO BOX DETECTION ---")
 clear_gpu()
 
@@ -76,13 +79,15 @@ yolo_models = [YOLO(path) for path in yolo_model_paths]
 for img_name in tqdm(all_img_names, desc="Detecting Boxes"):
     img_path = os.path.join(IMG_DIR, img_name)
     
+    h, w = cv2.imread(img_path).shape[:2] 
+    
     all_detections = []
     for model in yolo_models:
-        results = model.predict(source=img_path, imgsz=1024, conf=0.25, max_det=2000, augment=True, verbose=False)
+        results = model.predict(source=img_path, imgsz=1216, conf=0.3, max_det=2000, augment=True, verbose=False)
         detections = sv.Detections.from_ultralytics(results[0])
         all_detections.append(detections)
 
-    combined_dets = combine_with_nms(all_detections, iou_threshold=0.4, class_agnostic=False)
+    combined_dets = run_wbf(all_detections, image_shape=(h, w), iou_thr=0.55, skip_box_thr=0.25)
     
     combined_dets.mask = None 
     pipeline_data[img_name]["boxes"] = combined_dets
@@ -90,7 +95,9 @@ for img_name in tqdm(all_img_names, desc="Detecting Boxes"):
 del yolo_models
 clear_gpu()
 
-
+# ==============================================================================
+# STAGE 3: SAM SEGMENTATION & SAVE
+# ==============================================================================
 print("\n--- STAGE 3: SAM SEGMENTATION & SAVE ---")
 clear_gpu()
 
@@ -130,10 +137,9 @@ for img_name in tqdm(all_img_names, desc="Segmenting with SAM"):
             num_masks = len(masks_cpu)
             
             if num_masks != num_dets:
-                print(f"Size Mismatch for {img_name}: {num_dets} boxes vs {num_masks} masks. Truncating to shorter length.")
+                 pass 
             
             combined_dets.mask = masks_cpu
-            
             safe_loop_limit = min(num_dets, num_masks)
             
             for i in range(safe_loop_limit):
@@ -158,9 +164,8 @@ for img_name in tqdm(all_img_names, desc="Segmenting with SAM"):
                 image_info["annotations"].append(ann)
     
     submission_data["images"].append(image_info)
-    
-    if len(submission_data["images"]) % 3 == 0:
-        clear_gpu()
+
+    clear_gpu()
 
 with open(output_json, 'w') as f:
     json.dump(submission_data, f, indent=4)
