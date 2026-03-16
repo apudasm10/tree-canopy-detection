@@ -54,7 +54,6 @@ with open(os.path.join(dataset_root, "dataset.yaml"), "w") as f:
 
 print("YOLO dataset preparation complete.")
 
-exit()
 aerial_augments = [
     A.RandomRotate90(p=0.3),
     A.Blur(blur_limit=(3, 7), p=0.07),

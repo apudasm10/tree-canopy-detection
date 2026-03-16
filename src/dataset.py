@@ -165,3 +165,102 @@ class TCDClassification(Dataset):
             img = self.augments(img)
 
         return img, label
+    
+class CustomDataset(Dataset):
+    def __init__(self, img_list, img_folder, json_file, processor, augments=None):
+        self.img_list = img_list
+        self.img_folder = img_folder
+        self.processor = processor
+        self.augments = augments
+
+        with open(json_file, 'r') as f:
+            all_data = json.load(f)["images"]
+
+        self.ann_map = {}
+        for item in all_data:
+            self.ann_map[item["file_name"]] = {
+                "annotations": item.get("annotations", []),
+                "file_name": item["file_name"],
+                "height": item["height"],
+                "width": item["width"],
+                "cm_resolution": item["cm_resolution"],
+                "scene_type": item["scene_type"]
+            }
+            
+        self.label2int = {"individual_tree": 0, "group_of_trees": 1}
+        self.int2label = {idx: name for name, idx in self.label2int.items()}
+
+        print(f"Found {len(self.img_list)} images.")
+        print(f"Class Mapping: {self.label2int}")
+        
+    def __len__(self):
+        return len(self.img_list)
+
+    def __getitem__(self, idx):
+        file_name = self.img_list[idx]
+        sample = self.ann_map.get(file_name)
+        img_path = os.path.join(self.img_folder, sample.get("file_name"))
+        image = np.array(Image.open(img_path).convert("RGB"))
+        h, w = image.shape[:2]
+        
+        labels = []
+        annotations = sample.get('annotations', [])
+        id_mask = np.zeros((h, w), dtype=np.int32)
+        id_to_label = {0: 255}  # Background mapped to ignore index
+        
+        for i, obj in enumerate(annotations, 1):
+            poly = np.array(obj.get("segmentation"), dtype=np.int32).reshape(-1, 2)
+            cv2.fillPoly(id_mask, [poly], i)
+            id_to_label[i] = self.label2int.get(obj["class"], 1)
+            labels.append(self.label2int.get(obj["class"], 0))
+
+        if self.augments:
+            augmented = self.augments(
+                image=image,
+                mask=id_mask,
+                class_labels=labels
+            )
+
+            image = augmented["image"]
+            id_mask = augmented["mask"]
+
+            unique_ids = np.unique(id_mask)
+            id_to_label = {k: v for k, v in id_to_label.items() if k in unique_ids}
+
+        inputs = self.processor(
+            images=image,
+            segmentation_maps=id_mask,
+            instance_id_to_semantic_id=id_to_label,
+            return_tensors="pt"
+        )
+        
+        labels = inputs["class_labels"][0] # Shape: (Num_Objects,)
+        masks = inputs["mask_labels"][0]   # Shape: (Num_Objects, H, W)
+        
+        # 2. Find valid objects (Label is NOT 255)
+        keep_indices = labels != 255
+        
+        # 3. Overwrite inputs with filtered data and remove batch dim
+        inputs["class_labels"] = labels[keep_indices]
+        inputs["mask_labels"] = masks[keep_indices]
+        inputs["pixel_values"] = inputs["pixel_values"][0] 
+        
+        return inputs
+    
+
+def collate_fn_seg(batch):
+    pixel_values = torch.stack([x["pixel_values"] for x in batch])
+    pixel_mask = torch.stack([x["pixel_mask"] for x in batch]) if "pixel_mask" in batch[0] else None
+    
+    mask_labels = [x["mask_labels"] for x in batch]
+    class_labels = [x["class_labels"] for x in batch]
+    
+    batch_out = {
+        "pixel_values": pixel_values,
+        "mask_labels": mask_labels,
+        "class_labels": class_labels,
+    }
+    if pixel_mask is not None:
+        batch_out["pixel_mask"] = pixel_mask
+        
+    return batch_out
