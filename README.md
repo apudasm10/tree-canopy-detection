@@ -4,6 +4,13 @@
 
 This repository contains the code and methodology for the Tree Canopy Detection Competition [hosted by Solafune]. The primary objective is to detect tree canopies across multiple resolutions of aerial and satellite imagery and categorize them into two classes: Individual Tree and Group of Trees. Additionally, the pipeline classifies the scene types.
 
+<table align="center">
+  <tr>
+    <td><img src="imgs/results_1.gif" alt="Result 1" width="100%"/></td>
+    <td><img src="imgs/results_2.gif" alt="Result 2" width="100%"/></td>
+  </tr>
+</table>
+
 ## Problem Statement & Challenges
 
 Detecting tree canopies in high-density environments presents several significant challenges:
